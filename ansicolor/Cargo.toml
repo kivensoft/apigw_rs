@@ -1,0 +1,6 @@
+[package]
+name = "ansicolor"
+version = "1.0.0"
+edition = "2021"
+authors = ["kiven <kivensoft@gmail.com>"]
+description = "Ansi terminal color definition library"

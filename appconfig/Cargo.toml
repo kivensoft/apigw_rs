@@ -1,0 +1,15 @@
+[package]
+name = "appconfig"
+version = "1.0.0"
+edition = "2021"
+authors = ["kiven <kivensoft@gmail.com>"]
+description = "A simple Unix style command line parameter and configuration file parsing library"
+
+[features]
+default = ["cfg_file"]
+cfg_file = []
+chinese = []
+
+[dependencies]
+thiserror = "1.0"
+rand = "0.8"

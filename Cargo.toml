@@ -1,0 +1,53 @@
+# cargo build --release --target=x86_64-unknown-linux-musl
+[package]
+name = "apigw"
+version = "0.9.0"
+authors = ["kiven <kivensoft@gmail.com>"]
+edition = "2021"
+description = "intelligent community api gateway"
+repository = "https://github.com/kivensoft/intelligent_community_gw"
+
+[profile.release]
+opt-level = 'z'  # Optimize for size
+lto = true
+strip = true
+codegen-units = 1
+incremental = false
+panic = 'abort'
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+# default = ["current_thread"]
+# current_thread = []
+multi_thread = []
+
+[dependencies]
+tokio = { version = "1.27", features = ["full"] } # 最流行的异步io库
+hyper = { version = "0.14", features = ["http1", "client"] } # 最流行的底层http协议库
+serde = { version = "1.0", features = ["derive", "rc"] } # 最流行的序列化反序列化库
+serde_json = "1.0" # 最流行的json序列化反序列化库
+urlencoding = "2.1" # url编解码库
+querystring = "1.1" # url参数解析库
+anyhow = "1.0" # 最流行的错误处理库
+log = "0.4" # 日志门面库，官方标准
+cfg-if = "1.0" # 条件编译宏
+# chrono = "0.4" # 最流行的日期时间库
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] } # 官方推荐的日期时间库
+async-trait = "0.1" # trait的异步函数声明库
+compact_str = { version = "0.7", features = ["serde", "bytes"] }
+lazy_static = "1.4" # 广泛被使用的静态变量初始化库
+parking_lot = "0.12" # 性能更好的替代标准库Mutex/RwLock的三方库
+triomphe = "0.1" # 比标准库的Arc更轻量的替代类
+lru = { version = "0.10", default-features = false } # 简单迷你的lru缓存库
+# smallvec = { version = "1.10", features = ["write"] } # 基于栈的动态数组
+smallstr = "0.3" # 基于栈的字符串
+rand = "0.8" # 最广泛使用的随机数生成库
+base64 = "0.21" # base64编解码库
+md-5 = "0.10" # 基于rust-crypto的md5算法库
+asynclog = { version = "1.0", path = "asynclog" } # 支持同步和异步两种方式的迷你日志实现库
+appconfig = { version = "1.0", path = "appconfig" } # 支持命令行参数解析和配置文件参数解析的库
+ansicolor = { version = "1.0", path = "ansicolor" } # 支持终端ansi颜色的库
+httpserver = { version = "1.0", path = "httpserver" } # 迷你的http库
+localtime = { version = "1.0", path = "localtime" } # 本地时间序列化反序列化库
+jwt = { version = "1.0", path = "jwt" } # 迷你的http库
