@@ -178,27 +178,6 @@ pub struct ApiResult<T> {
     pub data: Option<T>,
 }
 
-pub type Request = hyper::Request<hyper::Body>;
-pub type Response = hyper::Response<hyper::Body>;
-
-#[derive(Error, Debug)]
-pub enum HttpContextError {
-    #[error("the request body is empty")]
-    EmptyBody,
-    #[error("read request body error")]
-    ReadBody(#[from] hyper::Error),
-    #[error(transparent)]
-    DecodeJsonError(#[from] serde_json::error::Error),
-}
-
-pub struct HttpContext {
-    pub req: Request,
-    pub addr: std::net::SocketAddr,
-    id: u32,
-    uid: u32,
-    attrs: Value,
-}
-
 impl <T> ApiResult<T> {
     pub fn ok(data: T) -> Self {
         Self {
@@ -231,6 +210,27 @@ impl <T> ApiResult<T> {
     pub fn is_fail(&self) -> bool {
         self.code != 200
     }
+}
+
+pub type Request = hyper::Request<hyper::Body>;
+pub type Response = hyper::Response<hyper::Body>;
+
+#[derive(Error, Debug)]
+pub enum HttpContextError {
+    #[error("the request body is empty")]
+    EmptyBody,
+    #[error("read request body error")]
+    ReadBody(#[from] hyper::Error),
+    #[error(transparent)]
+    DecodeJsonError(#[from] serde_json::error::Error),
+}
+
+pub struct HttpContext {
+    pub req: Request,
+    pub addr: std::net::SocketAddr,
+    id: u32,
+    uid: u32,
+    attrs: Value,
 }
 
 impl HttpContext {
@@ -580,6 +580,7 @@ impl HttpMiddleware for AccessLog {
         let id = ctx.id();
         let method = ctx.req.method().clone();
         let path = CompactString::new(ctx.req.uri().path());
+        log::debug!("[{id:08x}] {method} \x1b[33m{path}\x1b[0m");
 
         let res = next.run(ctx).await;
         let ms = start.elapsed().as_millis();
@@ -699,13 +700,13 @@ impl HttpServer {
             }
         });
 
-        log::info!("Starting http server on \x1b[34m{addr}\x1b[0m");
         let server = hyper::Server::try_bind(&addr)
                 .with_context(|| format!("bind sockaddr {addr} fail"))?
                 .serve(make_svc);
 
         f.handle().await?;
 
+        log::info!("Startup http server on \x1b[34m{addr}\x1b[0m");
         Ok(server.await?)
     }
 

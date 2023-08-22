@@ -37,7 +37,7 @@ pub fn verify(pw_plain: &str, pw_encrypt: &str) -> Result<bool> {
     let mut pass_out = [0; PWD_LEN];
     do_encrypt(&mut pass_out, pw_plain.as_bytes(), salt_base64);
 
-    let verify_result = &pass_out == digest;
+    let verify_result = pass_out == digest;
     if !verify_result {
         log::trace!("密码校验错误: 原密码 = [{}], 计算结果 = [{}], 期望结果 = [{}]",
                 pw_plain, std::str::from_utf8(&pass_out).unwrap(), pw_encrypt);
@@ -49,8 +49,8 @@ pub fn verify(pw_plain: &str, pw_encrypt: &str) -> Result<bool> {
 fn gensalt(out: &mut [u8]) {
     debug_assert!(out.len() == SALT_LEN);
     let mut rng = rand::thread_rng();
-    for i in 0..SALT_LEN {
-        out[i] = CRYPT_B64_CHARS[rng.gen_range(0..CRYPT_B64_CHARS.len())];
+    for item in out.iter_mut().take(SALT_LEN) {
+        *item = CRYPT_B64_CHARS[rng.gen_range(0..CRYPT_B64_CHARS.len())];
     }
 }
 
@@ -146,8 +146,8 @@ fn u8_to_b64(out: &mut [u8], b1: u8, b2: u8, b3: u8) {
             | (((b2 as u32) << 8) & 0x00FFFF)
             | ((b3 as u32) & 0xff);
 
-    for i in 0..out.len() {
-        out[i] = CRYPT_B64_CHARS[(w as usize) & 0x3F];
+    for item in out {
+        *item = CRYPT_B64_CHARS[(w as usize) & 0x3F];
         w >>= 6;
     }
 }

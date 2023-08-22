@@ -132,12 +132,13 @@ impl Authentication {
 
 #[async_trait::async_trait]
 impl httpserver::HttpMiddleware for Authentication {
-    async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>,) -> anyhow::Result<Response> {
+    async fn handle<'a>(&'a self, mut ctx: HttpContext, next: Next<'a>,) -> anyhow::Result<Response> {
         // 解析token并进行校验，校验成功返回uid
         if let Some(token) = Self::get_token(&ctx)? {
             if let Err(e) = self.verify_token(&token) {
                 log::error!("[{:08x}] AUTH verify token error: {:?}", ctx.id(), e);
-                anyhow::bail!(e)
+                // anyhow::bail!(e)
+                ctx.req.headers_mut().remove(jwt::AUTHORIZATION);
             }
         }
         next.run(ctx).await

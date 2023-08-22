@@ -21,10 +21,7 @@ pub type DictItems = Arc<Vec<DictItem>>;
 type DictMap = HashMap<CompactString, DictItems>;
 
 pub fn query(group: &str) -> Option<DictItems> {
-    match DICT_MAP.read().get(group) {
-        Some(v) => Some(v.clone()),
-        None => None,
-    }
+    DICT_MAP.read().get(group).cloned()
 }
 
 pub fn load(filename: &str) -> Result<()> {

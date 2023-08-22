@@ -77,7 +77,7 @@ fn init() -> bool {
     let version = buf.as_str();
 
     let ac = AppConf::init();
-    if !appconfig::parse_args(ac, &version).expect("parse args error") {
+    if !appconfig::parse_args(ac, version).expect("parse args error") {
         return false;
     }
 
@@ -89,7 +89,7 @@ fn init() -> bool {
         startup_time: unix_timestamp(),
     });
 
-    if ac.listen.len() > 0 && ac.listen.as_bytes()[0] == b':' {
+    if !ac.listen.is_empty() && ac.listen.as_bytes()[0] == b':' {
         ac.listen.insert_str(0, "0.0.0.0");
     };
 

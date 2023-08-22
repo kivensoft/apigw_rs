@@ -212,7 +212,7 @@ pub async fn proxy_handler(mut ctx: HttpContext) -> Result<Response> {
     // 获取path对应的endpoint，找不到直接返回service not found错误
     let endpoint = match get_service_endpoint(&path) {
         Some(v) => v,
-        None => return Ok(ResBuiler::fail("service not found")?),
+        None => return ResBuiler::fail("service not found"),
     };
     let path_and_query = ctx.req.uri().path_and_query()
         .map(|v| v.as_str())
