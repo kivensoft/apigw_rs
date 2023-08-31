@@ -4,4 +4,4 @@ set project=apigw
 set src=/f/%project%/
 set dst=/d/develop/rust/%project%/
 
-rsync -av %dst% %src%
+rsync -av --exclude="/target/" --exclude="/.git/" %dst% %src%

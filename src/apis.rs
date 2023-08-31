@@ -1,4 +1,5 @@
 //! 网关应用提供的服务接口
+
 use crate::{
     dict,
     proxy::{self, ServiceGroup},
@@ -14,18 +15,8 @@ use serde_json::Value;
 #[derive(Deserialize)]
 struct RegRequest {
     endpoint: CompactString,
-    paths: Vec<CompactString>,
-}
-
-#[derive(Deserialize)]
-struct CfgRequest {
-    group: CompactString,
-}
-
-#[derive(Serialize)]
-struct CfgResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    config: Option<dict::DictItems>,
+    path: Option<CompactString>,
+    paths: Option<Vec<CompactString>>,
 }
 
 /// 服务测试，测试服务是否存活
@@ -153,8 +144,18 @@ pub async fn reg(ctx: HttpContext) -> Result<Response> {
 
     let param = ctx.into_json::<Req>().await?;
 
-    for path in &param.paths {
+    if param.path.is_none() && param.paths.is_none() {
+        return ResBuiler::fail("param path and paths not find");
+    }
+
+    if let Some(path) = &param.path {
         proxy::register_service(path, &param.endpoint);
+    }
+
+    if let Some(paths) = &param.paths {
+        for path in paths {
+            proxy::register_service(path, &param.endpoint);
+        }
     }
 
     ResBuiler::ok_with_empty()
@@ -166,8 +167,20 @@ pub async fn unreg(ctx: HttpContext) -> Result<Response> {
 
     let param = ctx.into_json::<Req>().await?;
 
-    for path in &param.paths {
-        proxy::unregister_service(path, &param.endpoint);
+    if param.path.is_none() && param.paths.is_none() {
+        return ResBuiler::fail("param path and paths not find");
+    }
+
+    let endpoint = &param.endpoint;
+
+    if let Some(path) = &param.path {
+        proxy::unregister_service(path, endpoint);
+    }
+
+    if let Some(paths) = &param.paths {
+        for path in paths {
+            proxy::unregister_service(path, endpoint);
+        }
     }
 
     ResBuiler::ok_with_empty()
@@ -175,8 +188,16 @@ pub async fn unreg(ctx: HttpContext) -> Result<Response> {
 
 /// 获取配置信息
 pub async fn cfg(ctx: HttpContext) -> Result<Response> {
-    type Req = CfgRequest;
-    type Res = CfgResponse;
+    #[derive(Deserialize)]
+    struct Req {
+        group: CompactString,
+    }
+
+    #[derive(Serialize)]
+    struct Res {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        config: Option<dict::DictItems>,
+    }
 
     let param = ctx.into_json::<Req>().await?;
 
