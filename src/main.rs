@@ -2,7 +2,6 @@ mod auth;
 mod apis;
 mod dict;
 mod proxy;
-mod unix_crypt;
 
 use std::{fmt::Write, time::SystemTime};
 
@@ -20,14 +19,13 @@ const BANNER: &str = r#"
 "#;
 
 const APP_NAME: &str = "apigw";
-const APP_VER: &str = "0.9.4";
+const APP_VER: &str = "0.9.5";
 
 const SCHEDULED_SECS: u64 = 180;
 
 appconfig::appglobal_define!(app_global, AppGlobal,
     connect_timeout: u32,
     heart_break_live_time: u32,
-    token_expire: u32,
     startup_time: u64,
 );
 
@@ -41,7 +39,6 @@ appconfig::appconfig_define!(app_conf, AppConf,
     mtcs        : String => ["",   "mtcs",         "MaxTokenCacheSize", "max token cache size"],
     api_expire  : String => ["",   "api-expire",   "ApiExpire",         "api service expire time (unit: seconds)"],
     conn_timeout: String => ["",   "conn-timeout", "ConnectTimeout",    "service connect timeout (unit: seconds)"],
-    token_expire: String => ["",   "token-expire", "TokenExpire",       "token expire timer(unit: minutes)"],
     token_issuer: String => ["i",  "token-issuer", "TokenIssuer",       "token issuer"],
     token_key   : String => ["k",  "token-key",    "TokenKey",          "jwt token key"],
 );
@@ -58,7 +55,6 @@ impl Default for AppConf {
             mtcs:         String::from("128"),
             api_expire:   String::from("90"),
             conn_timeout: String::from("3"),
-            token_expire: String::from("1440"),
             token_issuer: String::from(APP_NAME),
             token_key:    String::from("Kivensoft Copyright 2023"),
         }
@@ -81,11 +77,9 @@ fn init() -> bool {
         return false;
     }
 
-    let token_expire: u32 = ac.token_expire.parse().expect("arg token-expire is not a number");
     AppGlobal::init(AppGlobal {
         connect_timeout: ac.conn_timeout.parse().expect("arg conn-timeout is not a number"),
         heart_break_live_time: ac.api_expire.parse().expect("arg api-expire is not a number"),
-        token_expire: token_expire * 60,
         startup_time: unix_timestamp(),
     });
 
@@ -100,7 +94,8 @@ fn init() -> bool {
         println!("config setting: {ac:#?}\n");
     }
 
-    asynclog::init_log(log_level, ac.log_file.clone(), log_max, true, false).expect("init log error");
+    asynclog::init_log(log_level, ac.log_file.clone(), log_max, true, true)
+        .expect("init log error");
     asynclog::set_level("mio".to_owned(), log::LevelFilter::Info);
     asynclog::set_level("want".to_owned(), log::LevelFilter::Info);
 
@@ -140,8 +135,6 @@ fn main() {
     httpserver::register_apis!(srv, "/api/gw/",
         "ping": apis::ping,
         "token": apis::token,
-        "gen-pw": apis::gen_pw,
-        "chk-pw": apis::chk_pw,
         "status": apis::status,
         "query": apis::query,
         "reg": apis::reg,

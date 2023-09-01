@@ -3,11 +3,10 @@
 use crate::{
     dict,
     proxy::{self, ServiceGroup},
-    AppConf, AppGlobal, unix_crypt,
+    AppConf, AppGlobal,
 };
-use anyhow::Result;
 use compact_str::{format_compact, CompactString, ToCompactString};
-use httpserver::{fail_if, HttpContext, ResBuiler, Response};
+use httpserver::{HttpContext, Resp, HttpResult};
 use localtime::LocalTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,7 +19,7 @@ struct RegRequest {
 }
 
 /// 服务测试，测试服务是否存活
-pub async fn ping(ctx: HttpContext) -> Result<Response> {
+pub async fn ping(ctx: HttpContext) -> HttpResult {
     #[derive(Deserialize)]
     struct Req {
         reply: Option<CompactString>,
@@ -34,13 +33,14 @@ pub async fn ping(ctx: HttpContext) -> Result<Response> {
         server: CompactString,
     }
 
-    let reply = match ctx.into_option_json::<Req>().await? {
-        Some(ping_params) => ping_params.reply,
-        None => None,
-    }
-    .unwrap_or("pong".to_compact_string());
+    let reply = match ctx.into_opt_json::<Req>()
+        .await? {
+            Some(ping_params) => ping_params.reply,
+            None => None,
+        }
+        .unwrap_or("pong".to_compact_string());
 
-    ResBuiler::ok(&Res {
+    Resp::ok(&Res {
         reply,
         now: LocalTime::now(),
         server: format_compact!("{}/{}", crate::APP_NAME, crate::APP_VER),
@@ -48,66 +48,46 @@ pub async fn ping(ctx: HttpContext) -> Result<Response> {
 }
 
 /// 生成token，生成jwt格式token
-pub async fn token(ctx: HttpContext) -> Result<Response> {
+pub async fn token(ctx: HttpContext) -> HttpResult {
+    #[derive(Deserialize)]
+    // #[serde(rename_all = "camelCase")]
+    struct Req {
+        ttl  : u32,   // token存活时间(分钟为单位)
+        claim: Value, // 附加要加入jwt的字段及内容
+    }
+
     #[derive(Serialize)]
+    // #[serde(rename_all = "camelCase")]
     struct Res {
         token: String,
     }
 
     let ac = AppConf::get();
-    let exp = AppGlobal::get().token_expire as u64;
-    let param = ctx.into_json::<Value>().await?;
-    fail_if!(!param.is_object(), "request param format error");
-
-    let token = jwt::encode(&param, &ac.token_key, &ac.token_issuer, exp)?;
-
-    ResBuiler::ok(&Res { token })
-}
-
-/// 生成口令
-pub async fn gen_pw(ctx: HttpContext) -> Result<Response> {
-    #[derive(Deserialize, Serialize)]
-    struct Req {
-        password: String,
-    }
-
-    type Res = Req;
-
     let param: Req = ctx.into_json().await?;
-    let password = unix_crypt::encrypt(&param.password)?;
 
-    ResBuiler::ok(&Res { password })
-}
-
-/// 校验口令
-pub async fn chk_pw(ctx: HttpContext) -> Result<Response> {
-    #[derive(Deserialize, Serialize)]
-    struct Req {
-        password: CompactString,
-        digest: String,
+    if !param.claim.is_object() {
+        return Resp::fail("request param format error");
     }
 
-    let param: Req = ctx.into_json().await?;
-    if unix_crypt::verify(&param.password, &param.digest)? {
-        ResBuiler::ok_with_empty()
-    } else {
-        ResBuiler::fail("口令错误")
-    }
+    let exp = (param.ttl * 60) as u64;
+    let token = jwt::encode(&param.claim, &ac.token_key, &ac.token_issuer, exp)?;
+
+    Resp::ok(&Res { token })
 }
 
 /// 服务状态
-pub async fn status(_ctx: HttpContext) -> Result<Response> {
+pub async fn status(_ctx: HttpContext) -> HttpResult {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Res {
-        startup: LocalTime,             // 应用启动时间
-        service_ttl: u64,         // 服务过期时间（单位：秒）
-        services: Vec<ServiceGroup>,    // 有效服务列表
+        startup    : LocalTime,         // 应用启动时间
+        service_ttl: u64,               // 服务过期时间（单位：秒）
+        services   : Vec<ServiceGroup>, // 有效服务列表
     }
 
     let app_global = AppGlobal::get();
 
-    ResBuiler::ok(&Res {
+    Resp::ok(&Res {
         startup: LocalTime::from_unix_timestamp(app_global.startup_time as i64 ),
         service_ttl: app_global.heart_break_live_time as u64,
         services: proxy::service_status(),
@@ -115,26 +95,55 @@ pub async fn status(_ctx: HttpContext) -> Result<Response> {
 }
 
 /// 退出登录接口
-pub async fn query(ctx: HttpContext) -> Result<Response> {
+pub async fn query(ctx: HttpContext) -> HttpResult {
     #[derive(Deserialize)]
     struct Req {
+        path: Option<CompactString>,
+        paths: Option<Vec<CompactString>>,
+    }
+
+    #[derive(Serialize)]
+    struct Item {
         path: CompactString,
+        services: Vec<proxy::ServiceItem>,
     }
 
     #[derive(Serialize)]
     struct Res {
         #[serde(skip_serializing_if = "Option::is_none")]
         services: Option<Vec<proxy::ServiceItem>>,
+        list: Option<Vec<Item>>,
     }
 
     let param = ctx.into_json::<Req>().await?;
-    let services = proxy::service_query(&param.path);
 
-    ResBuiler::ok(&Res { services })
+    if param.path.is_none() && param.paths.is_none() {
+        return Resp::fail("param path and paths not find");
+    }
+
+    if let Some(path) = &param.path {
+        let services = proxy::service_query(path);
+        return Resp::ok(&Res { services, list: None, })
+    }
+
+    if let Some(paths) = param.paths {
+        let mut list = Vec::with_capacity(paths.len());
+        for path in paths {
+            if let Some(services) = proxy::service_query(&path) {
+                list.push(Item {
+                    path,
+                    services,
+                });
+            }
+        }
+        return Resp::ok(&Res { services: None, list: Some(list) })
+    }
+
+    Resp::ok_with_empty()
 }
 
 /// 注册服务(同时也作为心跳服务使用)
-pub async fn reg(ctx: HttpContext) -> Result<Response> {
+pub async fn reg(ctx: HttpContext) -> HttpResult {
     type Req = RegRequest;
 
     #[derive(Serialize)]
@@ -145,7 +154,7 @@ pub async fn reg(ctx: HttpContext) -> Result<Response> {
     let param = ctx.into_json::<Req>().await?;
 
     if param.path.is_none() && param.paths.is_none() {
-        return ResBuiler::fail("param path and paths not find");
+        return Resp::fail("param path and paths not find");
     }
 
     if let Some(path) = &param.path {
@@ -158,17 +167,17 @@ pub async fn reg(ctx: HttpContext) -> Result<Response> {
         }
     }
 
-    ResBuiler::ok_with_empty()
+    Resp::ok_with_empty()
 }
 
 /// 取消服务注册
-pub async fn unreg(ctx: HttpContext) -> Result<Response> {
+pub async fn unreg(ctx: HttpContext) -> HttpResult {
     type Req = RegRequest;
 
     let param = ctx.into_json::<Req>().await?;
 
     if param.path.is_none() && param.paths.is_none() {
-        return ResBuiler::fail("param path and paths not find");
+        return Resp::fail("param path and paths not find");
     }
 
     let endpoint = &param.endpoint;
@@ -183,11 +192,11 @@ pub async fn unreg(ctx: HttpContext) -> Result<Response> {
         }
     }
 
-    ResBuiler::ok_with_empty()
+    Resp::ok_with_empty()
 }
 
 /// 获取配置信息
-pub async fn cfg(ctx: HttpContext) -> Result<Response> {
+pub async fn cfg(ctx: HttpContext) -> HttpResult {
     #[derive(Deserialize)]
     struct Req {
         group: CompactString,
@@ -201,16 +210,16 @@ pub async fn cfg(ctx: HttpContext) -> Result<Response> {
 
     let param = ctx.into_json::<Req>().await?;
 
-    ResBuiler::ok(&Res { config: dict::query(&param.group) })
+    Resp::ok(&Res { config: dict::query(&param.group) })
 }
 
 /// 获取配置信息
-pub async fn reload_cfg(_ctx: HttpContext) -> Result<Response> {
+pub async fn reload_cfg(_ctx: HttpContext) -> HttpResult {
     let ac = AppConf::get();
     if !ac.dict_file.is_empty() {
         dict::load(&ac.dict_file).unwrap();
-        ResBuiler::ok_with_empty()
+        Resp::ok_with_empty()
     } else {
-        ResBuiler::fail("arg dict-file no specified")
+        Resp::fail("arg dict-file no specified")
     }
 }

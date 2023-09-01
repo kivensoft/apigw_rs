@@ -1,19 +1,19 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    fmt::Write,
-    time::Duration,
-};
 use anyhow::{Context, Result};
 use compact_str::{CompactString, ToCompactString};
-use httpserver::{HttpContext, ResBuiler, Response};
+use httpserver::{HttpContext, Resp, Response};
 use hyper::{
     client::{Client, HttpConnector},
-    Uri,
+    StatusCode, Uri,
 };
 use localtime::LocalTime;
 use parking_lot::Mutex;
 use serde::Serialize;
 use smallstr::SmallString;
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::Write,
+    time::Duration,
+};
 
 use crate::AppGlobal;
 
@@ -38,7 +38,8 @@ pub struct ServiceGroup {
 type ServiceInfoList = VecDeque<Box<ServiceInfo>>;
 
 lazy_static::lazy_static! {
-    static ref SERVICES: Mutex<HashMap<CompactString, ServiceInfoList>> = Mutex::new(HashMap::new());
+    static ref SERVICES: Mutex<HashMap<CompactString, ServiceInfoList>> =
+        Mutex::new(HashMap::new());
 }
 
 /// 注册服务
@@ -102,25 +103,22 @@ fn unregister_service_by_endpoint(endpoint: &str) {
 pub fn service_status() -> Vec<ServiceGroup> {
     let now = LocalTime::now().timestamp();
 
-    SERVICES
-        .lock()
-        .iter()
+    SERVICES.lock().iter()
         .filter_map(|(k, v)| {
-            let services: Vec<ServiceItem> = v
-                .iter()
+            let services: Vec<ServiceItem> = v.iter()
                 .filter_map(|s| {
-                    if s.expire > now || s.expire == 0 {
-                        Some(ServiceItem {
-                            endpoint: s.endpoint.clone(),
-                            expire: if s.expire != 0 {
-                                Some(LocalTime::from_unix_timestamp(s.expire))
-                            } else {
-                                None
-                            },
-                        })
-                    } else {
-                        None
+                    if s.expire < now && s.expire != 0 {
+                        return None;
                     }
+
+                    Some(ServiceItem {
+                        endpoint: s.endpoint.clone(),
+                        expire: if s.expire != 0 {
+                            Some(LocalTime::from_unix_timestamp(s.expire))
+                        } else {
+                            None
+                        },
+                    })
                 })
                 .collect();
 
@@ -147,8 +145,7 @@ pub fn service_query(path: &str) -> Option<Vec<ServiceItem>> {
         if let Some(svr_list) = services.get(path) {
             let now = LocalTime::now().timestamp();
 
-            let items = svr_list
-                .iter()
+            let items = svr_list.iter()
                 .filter(|s| s.expire > now || s.expire == 0)
                 .map(|s| ServiceItem {
                     endpoint: s.endpoint.clone(),
@@ -160,11 +157,7 @@ pub fn service_query(path: &str) -> Option<Vec<ServiceItem>> {
                 })
                 .collect::<Vec<ServiceItem>>();
 
-            return if !items.is_empty() {
-                Some(items)
-            } else {
-                None
-            };
+            return if !items.is_empty() { Some(items) } else { None };
         }
 
         pos = path.rfind('/');
@@ -204,7 +197,8 @@ fn gen_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
     let mut buf = SmallString::<[u8; 512]>::new();
     write!(buf, "http://{endpoint}{path_and_query}")?;
     let s = buf.as_str();
-    s.parse().with_context(|| format!("create forward uri error: `{s}`"))
+    s.parse()
+        .with_context(|| format!("create forward uri error: `{s}`"))
 }
 
 pub async fn proxy_handler(mut ctx: HttpContext) -> Result<Response> {
@@ -212,10 +206,10 @@ pub async fn proxy_handler(mut ctx: HttpContext) -> Result<Response> {
     // 获取path对应的endpoint，找不到直接返回service not found错误
     let endpoint = match get_service_endpoint(&path) {
         Some(v) => v,
-        None => return ResBuiler::fail("service not found"),
+        None => return Resp::fail_with_status(StatusCode::NOT_FOUND, 404, "Not Found"),
     };
-    let path_and_query = ctx.req.uri().path_and_query()
-        .map(|v| v.as_str())
+
+    let path_and_query = ctx.req.uri().path_and_query().map(|v| v.as_str())
         .unwrap_or("/");
     let uri = gen_uri(&endpoint, path_and_query)?;
 
@@ -235,7 +229,7 @@ pub async fn proxy_handler(mut ctx: HttpContext) -> Result<Response> {
         Err(e) => {
             unregister_service_by_endpoint(&endpoint);
             log::error!("[{req_id:08x}] FORWARD {path} error: {e:?}");
-            ResBuiler::internal_server_error()
+            Resp::internal_server_error()
         }
     }
 }

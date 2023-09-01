@@ -2,9 +2,15 @@ use anyhow::Context;
 use compact_str::CompactString;
 use hyper::{body::Buf, header::AsHeaderName, http::HeaderValue};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{Map, Value};
-use std::{borrow::BorrowMut, net::Ipv4Addr, sync::{Arc, atomic::AtomicU32}};
+use serde_json::Value;
 use thiserror::Error;
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::{Arc, atomic::AtomicU32, RwLock},
+    collections::HashMap
+};
+
+pub use compact_str;
 
 /// Batch registration API interface
 /// ## Example
@@ -24,7 +30,10 @@ use thiserror::Error;
 #[macro_export]
 macro_rules! register_apis {
     ($server:expr, $base:literal, $($path:literal : $handler:expr,)+) => {
-        $($server.register(concat!($base, $path), $handler); )*
+        $(
+            $server.register(&$crate::compact_str::format_compact!("{}{}",
+                $base, $path), $handler);
+        )*
     };
 }
 
@@ -45,7 +54,8 @@ macro_rules! check_required {
     ($val:expr, $($attr:tt),+) => {
         $(
             if $val.$attr.is_none() {
-                return $crate::ResBuiler::fail(concat!(stringify!($attr), " can't be null"));
+                return $crate::Resp::fail(&$crate::compact_str::format_compact!(
+                    "{}{}", stringify!($attr), " can't be null"));
             }
         )*
     };
@@ -69,20 +79,16 @@ macro_rules! check_required {
 #[macro_export]
 macro_rules! assign_required {
     ($val:expr, $($attr:tt),+) => {
-        {
+        let ($($attr,)*) = (
             $(
-                if $val.$attr.is_none() {
-                    return $crate::ResBuiler::fail(concat!(stringify!($attr), " can't be null"));
-                }
+                match &$val.$attr {
+                    Some(v) => v,
+                    None => return $crate::Resp::fail(
+                        &$crate::compact_str::format_compact!(
+                            "{}{}", stringify!($attr), " can't be null")),
+                },
             )*
-            (   $(
-                    match &$val.$attr {
-                        Some(v) => v,
-                        None => unsafe { std::hint::unreachable_unchecked() },
-                    },
-                )*
-            )
-        }
+        );
     };
 }
 
@@ -99,21 +105,33 @@ macro_rules! assign_required {
 macro_rules! fail_if {
     ($b:expr, $msg:literal) => {
         if $b {
-            return $crate::ResBuiler::fail($msg);
+            return $crate::Resp::fail($msg);
         }
     };
     ($b:expr, $($t:tt)+) => {
         if $b {
-            return $crate::ResBuiler::fail(&format!($($t)*));
+            return $crate::Resp::fail(&$crate::compact_str::format_compact!($($t)*));
         }
     };
 }
 
+/// Error message response returned when ApiResult.is_fail() == true
+/// ## Example
+/// ```rust
+/// use httpserver::fail_if_api;
+///
+/// let f = || {
+///     let ar = ApiResult::fail("open database error");
+///     fail_if_api!(ar);
+///     Resp::ok_with_empty()
+/// }
+/// assert_eq!(f(), Resp::fail_with_api_result(ApiResult::fail("open database error")));
+/// ```
 #[macro_export]
 macro_rules! fail_if_api {
     ($ar:expr) => {
         if $ar.is_fail() {
-            return $crate::ResBuiler::fail_with_api_result($ar);
+            return $crate::Resp::fail_with_api_result($ar);
         }
     };
 }
@@ -126,8 +144,8 @@ macro_rules! fail_if_api {
 ///
 /// let a = assign_if!(true, 52, 42);
 /// let b = assign_if!(false, 52, 42);
-/// assert_eq(52, a);
-/// assert_eq(42, b);
+/// assert_eq!(52, a);
+/// assert_eq!(42, b);
 /// ```
 #[macro_export]
 macro_rules! assign_if {
@@ -136,6 +154,16 @@ macro_rules! assign_if {
     };
 }
 
+/// Conditional assignment, similar to the ternary operator
+///
+///  ## Example
+/// ```rust
+/// use httpserver::assign_if;
+///
+/// let a = || api_fail_if!(true, "err");
+/// let b = ApiResult::fail("err");
+/// assert_eq!(a(), b);
+/// ```
 #[macro_export]
 macro_rules! api_fail_if {
     ($b:expr, $msg:literal) => {
@@ -150,6 +178,16 @@ macro_rules! api_fail_if {
     };
 }
 
+/// Conditional assignment, similar to the ternary operator
+///
+///  ## Example
+/// ```rust
+/// use httpserver::assign_if;
+///
+/// let a = || api_fail_if!(true, "err");
+/// let b = ApiResult::fail("err");
+/// assert_eq!(a(), Ok(b));
+/// ```
 #[macro_export]
 macro_rules! result_api_fail_if {
     ($b:expr, $msg:literal) => {
@@ -160,6 +198,60 @@ macro_rules! result_api_fail_if {
     ($b:expr, $($t:tt)+) => {
         if $b {
             return Ok($crate::ApiResult::fail(format!($($t)*)));
+        }
+    };
+}
+
+/// check Result type, if Err(e) then log error and
+/// return Resp::internal_server_error()
+///
+///  ## Example
+/// ```rust
+/// use httpserver::assign_if;
+///
+/// let f = || { a = Err("abc"); check_result(a); Ok(()) }
+/// assert_eq!(Resp::internal_server_error(), f());
+/// ```
+#[macro_export]
+macro_rules! check_result {
+    ($op: expr) => {
+        match $op {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("{e:?}");
+                return Resp::internal_server_error();
+            }
+        }
+    };
+    ($op: expr, $msg:literal) => {
+        match $op {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("{}: {:?}", $msg, e);
+                return Resp::internal_server_error();
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! await_result {
+    ($op: expr) => {
+        match $op.await {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("{e:?}");
+                return Resp::internal_server_error();
+            }
+        }
+    };
+    ($op: expr, $msg:literal) => {
+        match $op.await {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("{}: {:?}", $msg, e);
+                return Resp::internal_server_error();
+            }
         }
     };
 }
@@ -184,6 +276,14 @@ impl <T> ApiResult<T> {
             code: 200,
             message: None,
             data: Some(data),
+        }
+    }
+
+    pub fn ok_with_empty() -> Self {
+        Self {
+            code: 200,
+            message: None,
+            data: None,
         }
     }
 
@@ -212,8 +312,11 @@ impl <T> ApiResult<T> {
     }
 }
 
+
 pub type Request = hyper::Request<hyper::Body>;
 pub type Response = hyper::Response<hyper::Body>;
+pub type HttpResult = anyhow::Result<Response>;
+
 
 #[derive(Error, Debug)]
 pub enum HttpContextError {
@@ -225,12 +328,14 @@ pub enum HttpContextError {
     DecodeJsonError(#[from] serde_json::error::Error),
 }
 
+type HttpContextAttr = RwLock<HashMap<CompactString, Arc<Value>>>;
+
 pub struct HttpContext {
-    pub req: Request,
-    pub addr: std::net::SocketAddr,
-    id: u32,
-    uid: u32,
-    attrs: Value,
+    pub req : Request,         // 请求对象
+    addr    : SocketAddr,      // 请求客户端ip地址
+    id      : u32,             // 请求id(每个请求id唯一)
+    uid     : u32,             // 当前登录用户id(从token中解析, 未登录为0)
+    attr    : HttpContextAttr, // 附加属性(用户自定义)
 }
 
 impl HttpContext {
@@ -245,7 +350,7 @@ impl HttpContext {
     ///
     ///  ## Example
     /// ```rust
-    /// use httpserver::{HttpContext, Response, ResBuiler};
+    /// use httpserver::{HttpContext, Response, Resp};
     ///
     /// #[derive(serde::Deserialize)]
     /// struct ReqParam {
@@ -255,11 +360,11 @@ impl HttpContext {
     ///
     /// async fn ping(ctx: HttpContext) -> anyhow::Result<Response> {
     ///     let req_param = ctx.into_json::<ReqParam>().await?;
-    ///     ResBuiler::ok_with_empty()
+    ///     Resp::ok_with_empty()
     /// }
     /// ```
     pub async fn into_json<T: DeserializeOwned>(self) -> Result<T, HttpContextError> {
-        match self.into_option_json().await? {
+        match self.into_opt_json().await? {
             Some(v) => Ok(v),
             None => Err(HttpContextError::EmptyBody),
         }
@@ -277,7 +382,7 @@ impl HttpContext {
     ///
     ///  ## Example
     /// ```rust
-    /// use httpserver::{HttpContext, Response, ResBuiler};
+    /// use httpserver::{HttpContext, Response, Resp};
     ///
     /// #[derive(serde::Deserialize)]
     /// struct ReqParam {
@@ -287,10 +392,10 @@ impl HttpContext {
     ///
     /// async fn ping(ctx: HttpContext) -> anyhow::Result<Response> {
     ///     let req_param = ctx.into_option_json::<ReqParam>().await?;
-    ///     ResBuiler::ok_with_empty()
+    ///     Resp::ok_with_empty()
     /// }
     /// ```
-    pub async fn into_option_json<T: DeserializeOwned>(self) -> Result<Option<T>, HttpContextError> {
+    pub async fn into_opt_json<T: DeserializeOwned>(self) -> Result<Option<T>, HttpContextError> {
         let body = hyper::body::aggregate(self.req).await?;
         if body.remaining() > 0 {
             Ok(serde_json::from_reader(body.reader())?)
@@ -313,6 +418,11 @@ impl HttpContext {
         self.uid = uid;
     }
 
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// 获取客户端的真实ip, 获取优先级为X-Real-IP > X-Forwarded-For > socketaddr
     pub fn remote_ip(&self) -> Ipv4Addr {
         if let Some(ip) = self.req.headers().get("X-Real-IP") {
             if let Ok(ip) = ip.to_str() {
@@ -342,31 +452,20 @@ impl HttpContext {
         self.req.headers().get(key)
     }
 
-    pub fn attr(&self, key: &str) -> Option<&Value> {
-        match &self.attrs {
-            Value::Object(m) => m.get(key),
-            _ => None,
-        }
+    pub fn attr<'a>(&'a self, key: &str) -> Option<Arc<Value>> {
+        self.attr.read().unwrap().get(key).map(|v| v.clone())
     }
 
-    pub fn set_attr(&mut self, key: String, value: Value) {
-        match self.attrs.borrow_mut() {
-            Value::Object(m) => {
-                m.insert(key, value);
-            },
-            _ => {
-                let mut m = Map::new();
-                m.insert(key, value);
-                self.attrs = Value::Object(m);
-            },
-        };
+    pub fn set_attr(&mut self, key: CompactString, value: Value) {
+        self.attr.write().unwrap().insert(key, Arc::new(value));
     }
 
 }
 
-pub struct ResBuiler;
 
-impl ResBuiler {
+pub struct Resp;
+
+impl Resp {
 
     /// Create a reply message with the specified status code and content
     ///
@@ -378,9 +477,9 @@ impl ResBuiler {
     /// # Examples
     ///
     /// ```
-    /// use httpserver::ResBuilder;
+    /// use httpserver::Resp;
     ///
-    /// ResBuiler::resp(hyper::StatusCode::Ok, hyper::Body::from(format!("{}",
+    /// Resp::resp(hyper::StatusCode::Ok, hyper::Body::from(format!("{}",
     ///     serde_json::json!({
     ///         "code": 200,
     ///             "data": {
@@ -390,7 +489,7 @@ impl ResBuiler {
     ///     })
     /// ))?;
     /// ````
-    pub fn resp(status: hyper::StatusCode, body: hyper::Body) -> anyhow::Result<Response> {
+    pub fn resp(status: hyper::StatusCode, body: hyper::Body) -> HttpResult {
         Ok(hyper::Response::builder()
             .status(status)
             .header(CONTENT_TYPE, APPLICATION_JSON)
@@ -402,9 +501,9 @@ impl ResBuiler {
     /// # Examples
     ///
     /// ```
-    /// use httpserver::ResBuilder;
+    /// use httpserver::Resp;
     ///
-    /// ResBuiler::resp_ok(hyper::Body::from(format!("{}",
+    /// Resp::resp_ok(hyper::Body::from(format!("{}",
     ///     serde_json::json!({
     ///         "code": 200,
     ///             "data": {
@@ -414,14 +513,14 @@ impl ResBuiler {
     ///     })
     /// ))?;
     /// ````
-    pub fn resp_ok(body: hyper::Body) -> anyhow::Result<Response> {
+    pub fn resp_ok(body: hyper::Body) -> HttpResult {
         Ok(hyper::Response::builder()
             .header(CONTENT_TYPE, APPLICATION_JSON)
             .body(body).context("response build error")?)
     }
 
     /// Create a reply message with 200, response body is empty
-    pub fn ok_with_empty() -> anyhow::Result<Response> {
+    pub fn ok_with_empty() -> HttpResult {
         Self::resp_ok(hyper::Body::from(r#"{"code":200}"#))
     }
 
@@ -430,9 +529,9 @@ impl ResBuiler {
     /// # Examples
     ///
     /// ```
-    /// use httpserver::ResBuilder;
+    /// use httpserver::Resp;
     ///
-    /// ResBuiler::ok(&serde_json::json!({
+    /// Resp::ok(&serde_json::json!({
     ///     "code": 200,
     ///         "data": {
     ///             "name":"kiven",
@@ -440,11 +539,11 @@ impl ResBuiler {
     ///         },
     /// }))?;
     /// ````
-    pub fn ok<T: ?Sized + Serialize>(data: &T) -> anyhow::Result<Response> {
+    pub fn ok<T: ?Sized + Serialize>(data: &T) -> HttpResult {
         Self::ok_option(Some(data))
     }
 
-    pub fn ok_option<T: ?Sized + Serialize>(data: Option<&T>) -> anyhow::Result<Response> {
+    pub fn ok_option<T: ?Sized + Serialize>(data: Option<&T>) -> HttpResult {
         // Self::resp_ok(to_json_body!({"code": 200, "data": data}))
         Self::resp_ok(hyper::Body::from(
             serde_json::to_vec(&ApiResult {
@@ -460,11 +559,11 @@ impl ResBuiler {
     /// # Examples
     ///
     /// ```
-    /// use httpserver::ResBuilder;
+    /// use httpserver::Resp;
     ///
-    /// ResBuiler::fail("required field `username`")?;
+    /// Resp::fail("required field `username`")?;
     /// ````
-    pub fn fail(message: &str) -> anyhow::Result<Response> {
+    pub fn fail(message: &str) -> HttpResult {
         Self::fail_with_code(500, message)
     }
 
@@ -473,11 +572,11 @@ impl ResBuiler {
     /// # Examples
     ///
     /// ```
-    /// use httpserver::ResBuilder;
+    /// use httpserver::Resp;
     ///
-    /// ResBuiler::fail_with_code(10086, "required field `username`")?;
+    /// Resp::fail_with_code(10086, "required field `username`")?;
     /// ````
-    pub fn fail_with_code(code: u32, message: &str) -> anyhow::Result<Response> {
+    pub fn fail_with_code(code: u32, message: &str) -> HttpResult {
         Self::fail_with_status(hyper::StatusCode::INTERNAL_SERVER_ERROR, code, message)
     }
 
@@ -486,12 +585,12 @@ impl ResBuiler {
     /// # Examples
     ///
     /// ```
-    /// use httpserver::ResBuilder;
+    /// use httpserver::Resp;
     ///
-    /// ResBuiler::fail_with_status(hyper::StatusCode::INTERNAL_SERVER_ERROR,
+    /// Resp::fail_with_status(hyper::StatusCode::INTERNAL_SERVER_ERROR,
     ///         10086, "required field `username`")?;
     /// ````
-    pub fn fail_with_status(status: hyper::StatusCode, code: u32, message: &str) -> anyhow::Result<Response> {
+    pub fn fail_with_status(status: hyper::StatusCode, code: u32, message: &str) -> HttpResult {
         // Self::resp(status, to_json_body!({"code": code, "message": message}))
         Self::resp(status, hyper::Body::from(
             serde_json::to_vec(&ApiResult::<&str> {
@@ -502,14 +601,15 @@ impl ResBuiler {
         ))
     }
 
-    pub fn fail_with_api_result<T>(ar: &ApiResult<T>) -> anyhow::Result<Response> {
+    pub fn fail_with_api_result<T>(ar: &ApiResult<T>) -> HttpResult {
         Self::fail_with_code(ar.code, ar.message.as_ref().unwrap())
     }
 
-    pub fn internal_server_error() -> anyhow::Result<Response> {
+    pub fn internal_server_error() -> HttpResult {
         Self::fail("internal server error")
     }
 }
+
 
 #[async_trait::async_trait]
 pub trait RunCallback: Send + Sync + 'static {
@@ -518,39 +618,37 @@ pub trait RunCallback: Send + Sync + 'static {
 
 #[async_trait::async_trait]
 impl<FN: Send + Sync + 'static, Fut> RunCallback for FN
-        where
-            FN: FnOnce() -> Fut,
-            Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static, {
-
+where
+    FN: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
     async fn handle(self) -> anyhow::Result<()> {
         self().await
     }
 }
 
+
 #[async_trait::async_trait]
 pub trait HttpHandler: Send + Sync + 'static {
-    async fn handle(&self, ctx: HttpContext) -> anyhow::Result<Response>;
+    async fn handle(&self, ctx: HttpContext) -> HttpResult;
 }
-
-pub type BoxHttpHandler = Box<dyn HttpHandler>;
 
 /// Definition of callback functions for API interface functions
 #[async_trait::async_trait]
 impl<FN: Send + Sync + 'static, Fut> HttpHandler for FN
-        where
-            FN: Fn(HttpContext) -> Fut,
-            Fut: std::future::Future<Output = anyhow::Result<Response>> + Send + 'static, {
-
-    async fn handle(&self, ctx: HttpContext) -> anyhow::Result<Response> {
+where
+    FN: Fn(HttpContext) -> Fut,
+    Fut: std::future::Future<Output = HttpResult> + Send + 'static,
+{
+    async fn handle(&self, ctx: HttpContext) -> HttpResult {
         self(ctx).await
     }
 }
 
-type Router = std::collections::HashMap<CompactString, BoxHttpHandler>;
 
 #[async_trait::async_trait]
 pub trait HttpMiddleware: Send + Sync + 'static {
-    async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>) -> anyhow::Result<Response>;
+    async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>) -> HttpResult;
 }
 
 pub struct Next<'a> {
@@ -559,7 +657,7 @@ pub struct Next<'a> {
 }
 
 impl<'a> Next<'a> {
-    pub async fn run(mut self, ctx: HttpContext) -> anyhow::Result<Response> {
+    pub async fn run(mut self, ctx: HttpContext) -> HttpResult {
         if let Some((current, next)) = self.next_middleware.split_first() {
             self.next_middleware = next;
             current.handle(ctx, self).await
@@ -569,12 +667,13 @@ impl<'a> Next<'a> {
     }
 }
 
+
 /// Log middleware
 pub struct AccessLog;
 
 #[async_trait::async_trait]
 impl HttpMiddleware for AccessLog {
-    async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>) -> anyhow::Result<Response> {
+    async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>) -> HttpResult {
         let start = std::time::Instant::now();
         let ip = ctx.remote_ip();
         let id = ctx.id();
@@ -587,8 +686,9 @@ impl HttpMiddleware for AccessLog {
         match &res {
             Ok(res) => {
                 if log::log_enabled!(log::Level::Debug) {
-                    let c = if res.status() == hyper::StatusCode::OK { 2 } else { 1 };
-                    log::debug!("[{id:08x}] {method} \x1b[34m{path} \x1b[3{c}m{}\x1b[0m {ms}ms, client: {ip}", res.status().as_u16());
+                    let c = assign_if!(res.status() == hyper::StatusCode::OK, 2, 1);
+                    log::debug!("[{id:08x}] {method} \x1b[34m{path} \x1b[3{c}m{}\x1b[0m {ms}ms, client: {ip}",
+                        res.status().as_u16());
                 }
             },
             Err(e)  => log::error!("[{id:08x}] {method} \x1b[34m{path}\x1b[0m \x1b[31m500\x1b[0m {ms}ms, error: {e:?}"),
@@ -597,6 +697,10 @@ impl HttpMiddleware for AccessLog {
         res
     }
 }
+
+
+pub type BoxHttpHandler = Box<dyn HttpHandler>;
+type Router = std::collections::HashMap<CompactString, BoxHttpHandler>;
 
 pub struct HttpServer {
     router: Router,
@@ -640,6 +744,7 @@ impl HttpServer {
     ///
     /// * `path`: api path
     /// * `handler`: handle of api function
+    #[inline]
     pub fn register(&mut self, path: &str, handler: impl HttpHandler) {
         self.router.insert(CompactString::new(path), Box::new(handler));
     }
@@ -686,8 +791,14 @@ impl HttpServer {
                             None => data.server.default_handler.as_ref(),
                         };
                         let next = Next { endpoint, next_middleware: &data.server.middlewares };
-                        let id = data.id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let ctx = HttpContext { req, addr, id, uid: 0, attrs: Value::Null };
+
+                        let ctx = HttpContext {
+                            req,
+                            addr,
+                            id: data.id.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                            uid: 0,
+                            attr: RwLock::new(HashMap::new()),
+                        };
 
                         let resp = match next.run(ctx).await {
                             Ok(resp) => resp,
@@ -710,12 +821,12 @@ impl HttpServer {
         Ok(server.await?)
     }
 
-    async fn handle_not_found(_: HttpContext) -> anyhow::Result<Response> {
-        Ok(ResBuiler::fail_with_status(hyper::StatusCode::NOT_FOUND, 404, "Not Found")?)
+    async fn handle_not_found(_: HttpContext) -> HttpResult {
+        Ok(Resp::fail_with_status(hyper::StatusCode::NOT_FOUND, 404, "Not Found")?)
     }
 
     pub fn handle_error(err: anyhow::Error) -> Response {
-        match ResBuiler::fail(&err.to_string()) {
+        match Resp::fail(&err.to_string()) {
             Ok(val) => val,
             Err(e) => {
                 log::error!("handle_error except: {e:?}");
