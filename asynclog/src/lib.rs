@@ -147,6 +147,8 @@ impl log::Log for AsyncLogger {
         if !self.enabled(record.metadata()) { return; }
 
         #[cfg(feature = "time")]
+        unsafe { time::util::local_offset::set_soundness(time::util::local_offset::Soundness::Unsound); }
+        #[cfg(feature = "time")]
         let now = time::OffsetDateTime::now_local().unwrap().format(&self.dt_fmt).unwrap();
         #[cfg(feature = "chrono")]
         let now = chrono::Local::now().format(&self.dt_fmt);
