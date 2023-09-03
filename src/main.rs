@@ -33,6 +33,8 @@ appconfig::appconfig_define!(app_conf, AppConf,
     log_level   : String => ["L",  "log-level",    "LogLevel",          "log level(trace/debug/info/warn/error/off)"],
     log_file    : String => ["F",  "log-file",     "LogFile",           "log filename"],
     log_max     : String => ["M",  "log-max",      "LogFileMaxSize",    "log file max size (unit: k/m/g)"],
+    log_async   : bool   => ["",   "log-async",    "LogAsync",          "启用异步日志"],
+    no_console  : bool   => ["",   "log-max",      "NoConsole",         "禁止将日志输出到控制台"],
     listen      : String => ["l",  "listen",       "Listen",            "http service ip:port"],
     dict_file   : String => ["d",  "dict-file",    "DictFile",          "set dict config file"],
     threads     : String => ["t",  "threads",      "Threads",           "set tokio runtime worker threads"],
@@ -49,6 +51,8 @@ impl Default for AppConf {
             log_level:    String::from("info"),
             log_file:     String::with_capacity(0),
             log_max:      String::from("10m"),
+            log_async:    false,
+            no_console:   false,
             listen:       String::from("127.0.0.1:6400"),
             dict_file:    String::new(),
             threads:      String::from("1"),
@@ -94,8 +98,8 @@ fn init() -> bool {
         println!("config setting: {ac:#?}\n");
     }
 
-    asynclog::init_log(log_level, ac.log_file.clone(), log_max, true, true)
-        .expect("init log error");
+    asynclog::init_log(log_level, ac.log_file.clone(), log_max,
+        !ac.no_console, ac.log_async).expect("init log error");
     asynclog::set_level("mio".to_owned(), log::LevelFilter::Info);
     asynclog::set_level("want".to_owned(), log::LevelFilter::Info);
 

@@ -16,13 +16,15 @@ pub const AUTHORIZATION: &str = "Authorization";
 pub const BEARER: &str = "Bearer ";
 pub const WWW_AUTHENTICATE :&str = "WWW-Authenticate";
 
-// json字符串的base64编码: {"alg":"HS256","typ":"JWT"}
+/// jwt头部: json字符串的base64编码: {"alg":"HS256","typ":"JWT"}
 const HEADER_B64: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+/// jwt body: 发布者的键名
 const ISSUER_KEY: &str = "iss";
+/// jwt body: 过期时间的键名
 const EXP_KEY: &str = "exp";
 
 #[cfg(feature = "rsa")]
-// {"alg":"RS256","typ":"JWT"}
+/// {"alg":"RS256","typ":"JWT"}
 const HEADER_RS256_B64: &str = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9";
 
 type HmacSha256 = Hmac<Sha256>;
@@ -267,6 +269,27 @@ pub fn decode_with_rsa_key(jwt: &str, issuer: &str, public_key: &str) -> Result<
     Ok(claims)
 }
 
+/// Verify whether the issuer is correct from jwt token
+///
+/// * `claims`: jwt user custom data, it must be Value::Object or Value::Null
+/// * `issuer` jwt issuer value
+///
+/// Returns:
+///
+/// Ok(()): verfied success, Err(e): error
+///
+/// # Examples
+///
+/// ```rust
+/// use jwt;
+///
+/// let s = serde_json::json!({
+///         "userId": 1,
+///         "username": "kiven",
+///         "iss": "kivensoft",
+///     });
+/// check_issuer(s, "kiensoft");
+/// ```
 pub fn check_issuer(claims: &Value, issuer: &str) -> Result<()> {
     if let Some(s) = claims.get(ISSUER_KEY) {
         if let Value::String(s) = s {
@@ -280,6 +303,27 @@ pub fn check_issuer(claims: &Value, issuer: &str) -> Result<()> {
     anyhow::bail!("issuer format error")
 }
 
+/// Verify whether expire from jwt token
+///
+/// * `claims`: jwt user custom data, it must be Value::Object or Value::Null
+///
+/// Returns:
+///
+/// Ok(String): verfied success, Err(e): error
+///
+/// # Examples
+///
+/// ```rust
+/// use jwt;
+///
+/// let s = jwt::encode(&serde_json::json!({
+///     "userId": 1,
+///     "username": "kiven",
+///     "iss": "kivensoft",
+///     "exp":  4102358400,
+///     });
+/// check_exp(s);
+/// ```
 pub fn check_exp(claims: &Value) -> Result<()> {
     if let Some(exp) = claims.get(EXP_KEY) {
         if let Some(exp) =  exp.as_u64() {

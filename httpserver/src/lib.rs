@@ -13,6 +13,7 @@ use std::{
 pub use compact_str;
 
 /// Batch registration API interface
+///
 /// ## Example
 /// ```rust
 /// use anyhow::Result;
@@ -29,7 +30,7 @@ pub use compact_str;
 /// ```
 #[macro_export]
 macro_rules! register_apis {
-    ($server:expr, $base:literal, $($path:literal : $handler:expr,)+) => {
+    ($server:expr, $base:expr, $($path:literal : $handler:expr,)+) => {
         $(
             $server.register(&$crate::compact_str::format_compact!("{}{}",
                 $base, $path), $handler);
@@ -38,6 +39,7 @@ macro_rules! register_apis {
 }
 
 /// Error message response returned when struct fields is Option::None
+///
 /// ## Example
 /// ```rust
 /// struct User {
@@ -62,6 +64,7 @@ macro_rules! check_required {
 }
 
 /// Error message response returned when struct fields is Option::None
+///
 /// ## Example
 /// ```rust
 /// struct User {
@@ -93,6 +96,7 @@ macro_rules! assign_required {
 }
 
 /// Error message response returned when expression is true
+///
 /// ## Example
 /// ```rust
 /// use httpserver::fail_if;
@@ -116,6 +120,7 @@ macro_rules! fail_if {
 }
 
 /// Error message response returned when ApiResult.is_fail() == true
+///
 /// ## Example
 /// ```rust
 /// use httpserver::fail_if_api;
@@ -209,8 +214,8 @@ macro_rules! result_api_fail_if {
 /// ```rust
 /// use httpserver::assign_if;
 ///
-/// let f = || { a = Err("abc"); check_result(a); Ok(()) }
-/// assert_eq!(Resp::internal_server_error(), f());
+/// let f = || { Err("abc") }
+/// check_result!(f());
 /// ```
 #[macro_export]
 macro_rules! check_result {
@@ -234,6 +239,15 @@ macro_rules! check_result {
     };
 }
 
+/// await and check Result type, if Err(e) then log error and
+/// return Resp::internal_server_error()
+///  ## Example
+/// ```rust
+/// use httpserver::await_result;
+///
+/// let f = || async { Err("abc") }
+/// await_result!(f());
+/// ```
 #[macro_export]
 macro_rules! await_result {
     ($op: expr) => {
@@ -256,8 +270,44 @@ macro_rules! await_result {
     };
 }
 
+/// http header "Content-Type"
 pub const CONTENT_TYPE: &'static str = "Content-Type";
+/// http header "applicatoin/json; charset=UTF-8"
 pub const APPLICATION_JSON: &'static str = "applicatoin/json; charset=UTF-8";
+
+/// Simplified declaration
+pub type Request = hyper::Request<hyper::Body>;
+pub type Response = hyper::Response<hyper::Body>;
+pub type HttpResult = anyhow::Result<Response>;
+pub type BoxHttpHandler = Box<dyn HttpHandler>;
+
+#[derive(Error, Debug)]
+pub enum HttpContextError {
+    #[error("the request body is empty")]
+    EmptyBody,
+    #[error("read request body error")]
+    ReadBody(#[from] hyper::Error),
+    #[error(transparent)]
+    DecodeJsonError(#[from] serde_json::error::Error),
+}
+
+/// use for HttpServer.run_with_callback
+#[async_trait::async_trait]
+pub trait RunCallback: Send + Sync + 'static {
+    async fn handle(self) -> anyhow::Result<()>;
+}
+
+/// api function interface
+#[async_trait::async_trait]
+pub trait HttpHandler: Send + Sync + 'static {
+    async fn handle(&self, ctx: HttpContext) -> HttpResult;
+}
+
+/// middleware interface
+#[async_trait::async_trait]
+pub trait HttpMiddleware: Send + Sync + 'static {
+    async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>) -> HttpResult;
+}
 
 /// Universal API interface returns data format
 #[derive(Serialize, Deserialize, Debug)]
@@ -269,6 +319,38 @@ pub struct ApiResult<T> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<T>,
 }
+
+/// api function param
+pub struct HttpContext {
+    pub req : Request,         // 请求对象
+    addr    : SocketAddr,      // 请求客户端ip地址
+    id      : u32,             // 请求id(每个请求id唯一)
+    uid     : u32,             // 当前登录用户id(从token中解析, 未登录为0)
+    attr    : HttpContextAttr, // 附加属性(用户自定义)
+}
+
+/// Build http response object
+pub struct Resp;
+
+/// http request process object
+pub struct Next<'a> {
+    pub endpoint: &'a dyn HttpHandler,
+    pub next_middleware: &'a [Arc<dyn HttpMiddleware>],
+}
+
+/// Log middleware
+pub struct AccessLog;
+
+/// http server
+pub struct HttpServer {
+    router: Router,
+    middlewares: Vec<Arc<dyn HttpMiddleware>>,
+    default_handler: BoxHttpHandler,
+}
+
+type HttpContextAttr = RwLock<HashMap<CompactString, Arc<Value>>>;
+type Router = std::collections::HashMap<CompactString, BoxHttpHandler>;
+
 
 impl <T> ApiResult<T> {
     pub fn ok(data: T) -> Self {
@@ -312,31 +394,6 @@ impl <T> ApiResult<T> {
     }
 }
 
-
-pub type Request = hyper::Request<hyper::Body>;
-pub type Response = hyper::Response<hyper::Body>;
-pub type HttpResult = anyhow::Result<Response>;
-
-
-#[derive(Error, Debug)]
-pub enum HttpContextError {
-    #[error("the request body is empty")]
-    EmptyBody,
-    #[error("read request body error")]
-    ReadBody(#[from] hyper::Error),
-    #[error(transparent)]
-    DecodeJsonError(#[from] serde_json::error::Error),
-}
-
-type HttpContextAttr = RwLock<HashMap<CompactString, Arc<Value>>>;
-
-pub struct HttpContext {
-    pub req : Request,         // 请求对象
-    addr    : SocketAddr,      // 请求客户端ip地址
-    id      : u32,             // 请求id(每个请求id唯一)
-    uid     : u32,             // 当前登录用户id(从token中解析, 未登录为0)
-    attr    : HttpContextAttr, // 附加属性(用户自定义)
-}
 
 impl HttpContext {
 
@@ -462,8 +519,6 @@ impl HttpContext {
 
 }
 
-
-pub struct Resp;
 
 impl Resp {
 
@@ -612,11 +667,6 @@ impl Resp {
 
 
 #[async_trait::async_trait]
-pub trait RunCallback: Send + Sync + 'static {
-    async fn handle(self) -> anyhow::Result<()>;
-}
-
-#[async_trait::async_trait]
 impl<FN: Send + Sync + 'static, Fut> RunCallback for FN
 where
     FN: FnOnce() -> Fut,
@@ -627,11 +677,6 @@ where
     }
 }
 
-
-#[async_trait::async_trait]
-pub trait HttpHandler: Send + Sync + 'static {
-    async fn handle(&self, ctx: HttpContext) -> HttpResult;
-}
 
 /// Definition of callback functions for API interface functions
 #[async_trait::async_trait]
@@ -646,16 +691,6 @@ where
 }
 
 
-#[async_trait::async_trait]
-pub trait HttpMiddleware: Send + Sync + 'static {
-    async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>) -> HttpResult;
-}
-
-pub struct Next<'a> {
-    pub endpoint: &'a dyn HttpHandler,
-    pub next_middleware: &'a [Arc<dyn HttpMiddleware>],
-}
-
 impl<'a> Next<'a> {
     pub async fn run(mut self, ctx: HttpContext) -> HttpResult {
         if let Some((current, next)) = self.next_middleware.split_first() {
@@ -667,9 +702,6 @@ impl<'a> Next<'a> {
     }
 }
 
-
-/// Log middleware
-pub struct AccessLog;
 
 #[async_trait::async_trait]
 impl HttpMiddleware for AccessLog {
@@ -685,11 +717,9 @@ impl HttpMiddleware for AccessLog {
         let ms = start.elapsed().as_millis();
         match &res {
             Ok(res) => {
-                if log::log_enabled!(log::Level::Debug) {
-                    let c = assign_if!(res.status() == hyper::StatusCode::OK, 2, 1);
-                    log::debug!("[{id:08x}] {method} \x1b[34m{path} \x1b[3{c}m{}\x1b[0m {ms}ms, client: {ip}",
-                        res.status().as_u16());
-                }
+                let c = assign_if!(res.status() == hyper::StatusCode::OK, 2, 1);
+                log::info!("[{id:08x}] {method} \x1b[34m{path} \x1b[3{c}m{}\x1b[0m {ms}ms, client: {ip}",
+                    res.status().as_u16());
             },
             Err(e)  => log::error!("[{id:08x}] {method} \x1b[34m{path}\x1b[0m \x1b[31m500\x1b[0m {ms}ms, error: {e:?}"),
         };
@@ -698,15 +728,6 @@ impl HttpMiddleware for AccessLog {
     }
 }
 
-
-pub type BoxHttpHandler = Box<dyn HttpHandler>;
-type Router = std::collections::HashMap<CompactString, BoxHttpHandler>;
-
-pub struct HttpServer {
-    router: Router,
-    middlewares: Vec<Arc<dyn HttpMiddleware>>,
-    default_handler: BoxHttpHandler,
-}
 
 impl HttpServer {
 

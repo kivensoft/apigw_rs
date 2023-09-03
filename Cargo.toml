@@ -1,7 +1,7 @@
 # cargo build --release --target=x86_64-unknown-linux-musl
 [package]
 name = "apigw"
-version = "0.9.0"
+version = "0.9.5"
 authors = ["kiven <kivensoft@gmail.com>"]
 edition = "2021"
 description = "intelligent community api gateway"

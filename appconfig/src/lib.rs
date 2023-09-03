@@ -12,13 +12,6 @@ pub use config::Config;
 #[cfg(not(feature = "cfg_file"))]
 pub struct Config;
 
-#[cfg(not(feature = "cfg_file"))]
-impl Config {
-    pub fn get_str(&self, _: &str) -> Result<Option<String>> {
-        Ok(None)
-    }
-}
-
 /// Application Parameter Definition Macro.
 ///
 /// ## Examples
@@ -100,7 +93,7 @@ macro_rules! appconfig_define {
             [$short_opt:literal, $long_opt:tt, $opt_name:literal, $desc:literal]$(,)?)+ ) => {
 
         mod $mod_name {
-            #[derive(Debug)]
+            #[derive(Debug, Clone)]
             pub struct $struct_name {
                 $( pub $field: $type,)*
             }
@@ -159,7 +152,7 @@ macro_rules! appglobal_define {
     ( $mod_name:ident, $struct_name:ident, $($field:ident : $type:ty,)+ ) => {
 
         mod $mod_name {
-            #[derive(Debug)]
+            #[derive(Debug, Clone)]
             pub struct $struct_name {
                 $(pub $field: $type,)*
             }
@@ -201,6 +194,7 @@ macro_rules! appglobal_define {
 const C_HELP: &str = "help";
 #[cfg(feature = "cfg_file")]
 const C_CONF_FILE: &str = "conf-file";
+
 
 #[derive(Error, Debug)]
 #[error("{msg}: {source}")]
@@ -257,7 +251,6 @@ pub fn print_banner(banner: &str, use_color: bool) {
 pub fn parse_args<T: AppConfig>(app_config: &mut T, banner: &str) -> Result<bool, AppCfgError> {
     parse_args_ext(app_config, banner, |_| true)
 }
-
 
 /// Parsing configuration from command line parameters and configuration files
 /// and populate it with the variable `ac`
@@ -326,6 +319,14 @@ pub fn parse_args_ext<T: AppConfig, F: Fn(&T) -> bool>(app_config: &mut T, versi
     Ok(true)
 }
 
+pub fn format_opt_desc<T: Display>(desc: &str, val: &T) -> String {
+    #[cfg(not(feature = "chinese"))]
+    return format!("{} (\x1b[34mdefault: \x1b[32m{}\x1b[0m)", desc, val);
+    #[cfg(feature = "chinese")]
+    return format!("{} (\x1b[34m缺省值: \x1b[32m{}\x1b[0m)", desc, val);
+}
+
+
 fn print_usage(prog: &str, version: &str, opts: &getopts::Options) {
     if version.len() > 0 {
         println!("\n{}", version);
@@ -365,9 +366,10 @@ fn get_from_config_file<T: AppConfig>(ac: &mut T, matches: &Matches, prog: &str)
     Ok(())
 }
 
-pub fn format_opt_desc<T: Display>(desc: &str, val: &T) -> String {
-    #[cfg(not(feature = "chinese"))]
-    return format!("{} (\x1b[34mdefault: \x1b[32m{}\x1b[0m)", desc, val);
-    #[cfg(feature = "chinese")]
-    return format!("{} (\x1b[34m缺省值: \x1b[32m{}\x1b[0m)", desc, val);
+
+#[cfg(not(feature = "cfg_file"))]
+impl Config {
+    pub fn get_str(&self, _: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 }

@@ -5,6 +5,29 @@ use std::path::Path;
 use std::str::FromStr;
 use thiserror::Error;
 
+#[derive(Error, Debug)]
+pub enum ConfigError {
+    #[error("The escape character format is not supported \\{0}")]
+    InvalidEscapeChar(char),
+    #[error("parse value error: {0}")]
+    FromStrError(String),
+    #[error("{0} at line {1}")]
+    ParseError(&'static str, usize),
+    #[error("{0}")]
+    StdError(#[from] Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// Config Struct
+pub struct Config {
+    data: Vec<u8>,
+    key_values: Vec<ConfigItem>,
+}
+
+pub struct ConfigIter<'a> {
+    cfg: &'a Config,
+    idx: usize,
+}
+
 macro_rules! skip_chars {
     (@sub $c:expr, $c1:expr) => { if $c != $c1 { break; } };
     (@sub $c:expr, $c1:expr, $c2:expr) => { if $c != $c1 && $c != $c2 { break; } };
@@ -44,34 +67,11 @@ macro_rules! util_chars {
     };
 }
 
-#[derive(Error, Debug)]
-pub enum ConfigError {
-    #[error("The escape character format is not supported \\{0}")]
-    InvalidEscapeChar(char),
-    #[error("parse value error: {0}")]
-    FromStrError(String),
-    #[error("{0} at line {1}")]
-    ParseError(&'static str, usize),
-    #[error("{0}")]
-    StdError(#[from] Box<dyn std::error::Error + Send + Sync>),
-}
-
 struct ConfigItem {
     key_begin: usize,
     key_end: usize,
     val_begin: usize,
     val_end: usize,
-}
-
-/// Config Struct
-pub struct Config {
-    data: Vec<u8>,
-    key_values: Vec<ConfigItem>,
-}
-
-pub struct ConfigIter<'a> {
-    cfg: &'a Config,
-    idx: usize,
 }
 
 impl ConfigItem {

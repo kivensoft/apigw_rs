@@ -1,6 +1,6 @@
 use std::{fmt::{Display, Formatter}, str::FromStr, sync::Once, mem::MaybeUninit, ops::Add, time::SystemTime};
 use serde::{Serialize, Deserialize, Serializer, Deserializer, de::{Visitor, Unexpected}};
-use time::{OffsetDateTime, macros, format_description::FormatItem, PrimitiveDateTime, UtcOffset};
+use time::{OffsetDateTime, macros, format_description::FormatItem, PrimitiveDateTime, UtcOffset, util::local_offset};
 pub use time::error::Parse as TimeParseError;
 
 pub const DATETIME_FORMAT: &[FormatItem] = macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
@@ -64,6 +64,7 @@ pub struct LocalTime(OffsetDateTime);
 
 impl LocalTime {
     pub fn now() -> Self {
+        unsafe { local_offset::set_soundness(local_offset::Soundness::Unsound); }
         Self(OffsetDateTime::now_local().unwrap())
     }
 
