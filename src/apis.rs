@@ -158,12 +158,16 @@ pub async fn reg(ctx: HttpContext) -> HttpResult {
     }
 
     if let Some(path) = &param.path {
-        proxy::register_service(path, &param.endpoint);
+        if proxy::register_service(path, &param.endpoint) {
+            log::info!("service[{}: {}] registration successful", path, param.endpoint);
+        }
     }
 
     if let Some(paths) = &param.paths {
         for path in paths {
-            proxy::register_service(path, &param.endpoint);
+            if proxy::register_service(path, &param.endpoint) {
+                log::info!("service[{}: {}] registration successful", path, param.endpoint);
+            }
         }
     }
 
@@ -184,11 +188,13 @@ pub async fn unreg(ctx: HttpContext) -> HttpResult {
 
     if let Some(path) = &param.path {
         proxy::unregister_service(path, endpoint);
+        log::info!("unregister service[{}: {}]", path, endpoint);
     }
 
     if let Some(paths) = &param.paths {
         for path in paths {
             proxy::unregister_service(path, endpoint);
+            log::info!("unregister server[{}: {}]", path, endpoint);
         }
     }
 
@@ -213,13 +219,15 @@ pub async fn cfg(ctx: HttpContext) -> HttpResult {
     Resp::ok(&Res { config: dict::query(&param.group) })
 }
 
-/// 获取配置信息
+/// 重新加载配置信息
 pub async fn reload_cfg(_ctx: HttpContext) -> HttpResult {
     let ac = AppConf::get();
     if !ac.dict_file.is_empty() {
         dict::load(&ac.dict_file).unwrap();
+        log::info!("dict-file reload completed");
         Resp::ok_with_empty()
     } else {
+        log::error!("reload dict-file error: arg dict-file is no specified");
         Resp::fail("arg dict-file no specified")
     }
 }

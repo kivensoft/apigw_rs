@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use compact_str::{CompactString, ToCompactString};
+use cookie::Cookie;
 use httpserver::{HttpContext, Next, Response};
 use lru::LruCache;
 use parking_lot::Mutex;
@@ -9,6 +10,7 @@ use tokio::time;
 use triomphe::Arc;
 
 const ACCESS_TOKEN: &str = "access_token";
+const COOKIE_NAME: &str = "Cookie";
 
 struct CacheItem {
     data: Value,
@@ -44,7 +46,7 @@ impl Authentication {
         // 获取token的签名值
         let sign = match jwt::get_sign(token) {
             Some(sign) => sign.to_owned(),
-            None => anyhow::bail!("jwt token format error: can't find '.'"),
+            None => bail!("jwt token format error: can't find '.'"),
         };
 
         let now = crate::unix_timestamp();
@@ -75,26 +77,46 @@ impl Authentication {
                     if auth.len() > jwt::BEARER.len() && auth.starts_with(jwt::BEARER) {
                         return Ok(Some(Cow::Borrowed(&auth[jwt::BEARER.len()..])));
                     } else {
-                        anyhow::bail!("Authorization is not jwt token")
+                        bail!("Authorization is not jwt token")
                     }
                 }
-                Err(e) => anyhow::bail!("Authorization value is invalid: {e}"),
+                Err(e) => bail!("Authorization value is invalid: {e}"),
             },
             None => Self::get_access_token(ctx),
         }
     }
 
-    /// 从url参数中解析access_token
+    /// 从url参数或cookie中解析access_token
     fn get_access_token(ctx: &HttpContext) -> Result<Option<Cow<str>>> {
+        // 优先从url中获取access_token参数
         if let Some(query) = ctx.req.uri().query() {
             let url_params = querystring::querify(query);
             if let Some(param) = url_params.iter().find(|v| v.0 == ACCESS_TOKEN) {
                 match urlencoding::decode(param.1) {
                     Ok(token) => return Ok(Some(token)),
-                    Err(e) => anyhow::bail!("request uri query is not utf8 string: {}", e),
+                    Err(e) => bail!(
+                        "request param access_token [{}] is not utf8 string: {:?}",
+                        param.1, e),
                 }
             };
         };
+
+        // url中找不到, 尝试从cookie中获取access_token
+        if let Some(cookie_str) = ctx.req.headers().get(COOKIE_NAME) {
+            let cookie_str = match cookie_str.to_str() {
+                Ok(s) => s,
+                Err(e) => bail!("cookie value is not utf8 string: {e:?}")
+            };
+            for cookie in Cookie::split_parse_encoded(cookie_str) {
+                match cookie {
+                    Ok(c) => if c.name() == ACCESS_TOKEN {
+                        return Ok(Some(Cow::Owned(c.value().to_owned())));
+                    },
+                    Err(e) => bail!("cookie value [{cookie_str}] parse encode error: {e:?}"),
+                }
+            }
+        }
+
         Ok(None)
     }
 

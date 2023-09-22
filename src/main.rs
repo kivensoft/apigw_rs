@@ -19,7 +19,8 @@ const BANNER: &str = r#"
 "#;
 
 const APP_NAME: &str = "apigw";
-const APP_VER: &str = "0.9.5";
+/// app版本号, 来自编译时由build.rs从cargo.toml中读取的版本号(读取内容写入.version文件)
+const APP_VER: &str = include_str!(concat!(env!("OUT_DIR"), "/.version"));
 
 const SCHEDULED_SECS: u64 = 180;
 

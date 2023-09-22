@@ -11,14 +11,14 @@ lazy_static::lazy_static! {
     static ref DICT_MAP: RwLock<DictMap> = RwLock::new(DictMap::new());
 }
 
+pub type DictItems = Arc<Vec<DictItem>>;
+type DictMap = HashMap<CompactString, DictItems>;
+
 #[derive(Serialize)]
 pub struct DictItem {
     pub key: CompactString,
     pub value: CompactString,
 }
-
-pub type DictItems = Arc<Vec<DictItem>>;
-type DictMap = HashMap<CompactString, DictItems>;
 
 pub fn query(group: &str) -> Option<DictItems> {
     DICT_MAP.read().get(group).cloned()
