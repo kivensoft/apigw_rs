@@ -2,6 +2,7 @@ mod auth;
 mod apis;
 mod dict;
 mod proxy;
+mod syssrv;
 
 use std::{fmt::Write, time::SystemTime};
 
@@ -34,8 +35,9 @@ appconfig::appconfig_define!(app_conf, AppConf,
     log_level   : String => ["L",  "log-level",    "LogLevel",          "log level(trace/debug/info/warn/error/off)"],
     log_file    : String => ["F",  "log-file",     "LogFile",           "log filename"],
     log_max     : String => ["M",  "log-max",      "LogFileMaxSize",    "log file max size (unit: k/m/g)"],
-    log_async   : bool   => ["",   "log-async",    "LogAsync",          "启用异步日志"],
-    no_console  : bool   => ["",   "log-max",      "NoConsole",         "禁止将日志输出到控制台"],
+    log_async   : bool   => ["",   "log-async",    "LogAsync",          "enable asynchronous logging"],
+    no_console  : bool   => ["",   "log-max",      "NoConsole",         "prohibit outputting logs to the console"],
+    install     : bool   => ["",   "install",      "Install",           "install as a system Linux service"],
     listen      : String => ["l",  "listen",       "Listen",            "http service ip:port"],
     dict_file   : String => ["d",  "dict-file",    "DictFile",          "set dict config file"],
     threads     : String => ["t",  "threads",      "Threads",           "set tokio runtime worker threads"],
@@ -54,6 +56,7 @@ impl Default for AppConf {
             log_max:      String::from("10m"),
             log_async:    false,
             no_console:   false,
+            install:      false,
             listen:       String::from("127.0.0.1:6400"),
             dict_file:    String::new(),
             threads:      String::from("1"),
@@ -79,6 +82,11 @@ fn init() -> bool {
 
     let ac = AppConf::init();
     if !appconfig::parse_args(ac, version).expect("parse args error") {
+        return false;
+    }
+
+    if ac.install {
+        syssrv::install();
         return false;
     }
 
@@ -127,7 +135,7 @@ fn main() {
     let max_token_cache_size = ac.mtcs.parse().expect("arg mtcs not a int number");
     let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
 
-    let mut srv = HttpServer::new(true);
+    let mut srv = HttpServer::new("/api/", true);
     srv.default_handler(proxy::proxy_handler);
 
     let authenticaton = srv.middleware(auth::Authentication::new(
@@ -137,14 +145,17 @@ fn main() {
         10 * 60,
     ));
 
-    httpserver::register_apis!(srv, "/api/gw/",
+    httpserver::register_apis!(srv, "gw/",
         "ping": apis::ping,
+        "ping/*": apis::ping,
         "token": apis::token,
         "status": apis::status,
         "query": apis::query,
+        "query/*": apis::query,
         "reg": apis::reg,
         "unreg": apis::unreg,
         "cfg": apis::cfg,
+        "cfg/*": apis::cfg,
         "reload-cfg": apis::reload_cfg,
     );
 

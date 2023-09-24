@@ -1,7 +1,7 @@
 # cargo build --release --target=x86_64-unknown-linux-musl
 [package]
 name = "apigw"
-version = "0.9.5"
+version = "0.9.6"
 authors = ["kiven <kivensoft@gmail.com>"]
 edition = "2021"
 description = "intelligent community api gateway"
@@ -30,7 +30,7 @@ serde = { version = "1.0", features = ["derive", "rc"] } # 最流行的序列化
 serde_json = "1.0" # 最流行的json序列化反序列化库
 urlencoding = "2.1" # url编解码库
 querystring = "1.1" # url参数解析库
-cookie = { version = "0.17", features = ["percent-encode"] }
+cookie = { version = "0.17", features = ["percent-encode"] } # http cookie库
 anyhow = "1.0" # 最流行的错误处理库
 log = "0.4" # 日志门面库，官方标准
 cfg-if = "1.0" # 条件编译宏

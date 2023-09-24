@@ -343,6 +343,7 @@ pub struct AccessLog;
 
 /// http server
 pub struct HttpServer {
+    prefix: CompactString,
     router: Router,
     middlewares: Vec<Arc<dyn HttpMiddleware>>,
     default_handler: BoxHttpHandler,
@@ -350,7 +351,6 @@ pub struct HttpServer {
 
 type HttpContextAttr = RwLock<HashMap<CompactString, Arc<Value>>>;
 type Router = std::collections::HashMap<CompactString, BoxHttpHandler>;
-
 
 impl <T> ApiResult<T> {
     pub fn ok(data: T) -> Self {
@@ -737,12 +737,13 @@ impl HttpServer {
     ///
     /// * `use_access_log`: set Log middleware if true
     ///
-    pub fn new(use_access_log: bool) -> Self {
+    pub fn new(prefix: &str, use_access_log: bool) -> Self {
         let mut middlewares: Vec<Arc<dyn HttpMiddleware>> = Vec::new();
         if use_access_log {
             middlewares.push(Arc::new(AccessLog));
         }
         HttpServer {
+            prefix: CompactString::new(prefix),
             router: std::collections::HashMap::new(),
             middlewares,
             default_handler: Box::new(Self::handle_not_found),
@@ -807,8 +808,8 @@ impl HttpServer {
 
                     async move {
                         let path = req.uri().path();
-                        let endpoint = match data.server.router.get(path) {
-                            Some(handler) => &**handler,
+                        let endpoint = match data.server.find_http_handler(path) {
+                            Some(handler) => handler,
                             None => data.server.default_handler.as_ref(),
                         };
                         let next = Next { endpoint, next_middleware: &data.server.middlewares };
@@ -869,4 +870,30 @@ impl HttpServer {
         return s;
     }
 
+    fn find_http_handler(&self, path: &str) -> Option<&dyn HttpHandler> {
+        // 前缀不匹配
+        if !path.starts_with(self.prefix.as_str()) {
+            return None;
+        }
+
+        // 找到直接匹配的路径
+        let mut path = CompactString::new(&path[self.prefix.len()..]);
+        if let Some(handler) = self.router.get(&path) {
+            return Some(handler.as_ref());
+        }
+
+        // 尝试递归上级路径查找带路径参数的接口
+        while let Some(pos) = path.rfind('/') {
+            path.truncate(pos + 1);
+            path.push('*');
+
+            if let Some(handler) = self.router.get(&path) {
+                return Some(handler.as_ref());
+            }
+
+            path.truncate(path.len() - 2);
+        }
+
+        None
+    }
 }

@@ -5,11 +5,17 @@ use crate::{
     proxy::{self, ServiceGroup},
     AppConf, AppGlobal,
 };
-use compact_str::{format_compact, CompactString, ToCompactString};
+use compact_str::{format_compact, CompactString};
 use httpserver::{HttpContext, Resp, HttpResult};
 use localtime::LocalTime;
+use querystring::querify;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+#[derive(Deserialize)]
+struct PingRequest {
+    reply: Option<CompactString>,
+}
 
 #[derive(Deserialize)]
 struct RegRequest {
@@ -20,25 +26,15 @@ struct RegRequest {
 
 /// 服务测试，测试服务是否存活
 pub async fn ping(ctx: HttpContext) -> HttpResult {
-    #[derive(Deserialize)]
-    struct Req {
-        reply: Option<CompactString>,
-    }
-
     #[derive(Serialize)]
-    // #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase")]
     struct Res {
         reply: CompactString,
         now: LocalTime,
         server: CompactString,
     }
 
-    let reply = match ctx.into_opt_json::<Req>()
-        .await? {
-            Some(ping_params) => ping_params.reply,
-            None => None,
-        }
-        .unwrap_or("pong".to_compact_string());
+    let reply = get_reply_param(ctx).await;
 
     Resp::ok(&Res {
         reply,
@@ -94,7 +90,7 @@ pub async fn status(_ctx: HttpContext) -> HttpResult {
     })
 }
 
-/// 退出登录接口
+/// 注册服务查询
 pub async fn query(ctx: HttpContext) -> HttpResult {
     #[derive(Deserialize)]
     struct Req {
@@ -115,13 +111,23 @@ pub async fn query(ctx: HttpContext) -> HttpResult {
         list: Option<Vec<Item>>,
     }
 
-    let param = ctx.into_json::<Req>().await?;
+    let url_path = CompactString::new(ctx.req.uri().path());
+    let mut param = ctx.into_opt_json::<Req>().await?
+            .unwrap_or(Req { path: None, paths: None });
+
+    if param.path.is_none() && !url_path.ends_with("/query") {
+        if let Some(pos) = url_path.rfind('/') {
+            let val = urlencoding::decode(&url_path[pos+1..])?;
+            param.path = Some(CompactString::new(val));
+        }
+    }
 
     if param.path.is_none() && param.paths.is_none() {
         return Resp::fail("param path and paths not find");
     }
 
     if let Some(path) = &param.path {
+        log::debug!("查找: {path}");
         let services = proxy::service_query(path);
         return Resp::ok(&Res { services, list: None, })
     }
@@ -205,7 +211,7 @@ pub async fn unreg(ctx: HttpContext) -> HttpResult {
 pub async fn cfg(ctx: HttpContext) -> HttpResult {
     #[derive(Deserialize)]
     struct Req {
-        group: CompactString,
+        group: Option<CompactString>,
     }
 
     #[derive(Serialize)]
@@ -214,9 +220,21 @@ pub async fn cfg(ctx: HttpContext) -> HttpResult {
         config: Option<dict::DictItems>,
     }
 
-    let param = ctx.into_json::<Req>().await?;
+    let url_path = CompactString::new(ctx.req.uri().path());
+    let mut param = ctx.into_opt_json::<Req>().await?
+        .unwrap_or(Req { group: None });
+    if param.group.is_none() && !url_path.ends_with("/cfg") {
+        if let Some(pos) = url_path.rfind('/') {
+            let val = urlencoding::decode(&url_path[pos+1..])?;
+            param.group = Some(CompactString::new(val));
+        }
+    }
 
-    Resp::ok(&Res { config: dict::query(&param.group) })
+    if param.group.is_none() {
+        return Resp::fail("param group not find");
+    }
+
+    Resp::ok(&Res { config: dict::query(&param.group.unwrap()) })
 }
 
 /// 重新加载配置信息
@@ -230,4 +248,43 @@ pub async fn reload_cfg(_ctx: HttpContext) -> HttpResult {
         log::error!("reload dict-file error: arg dict-file is no specified");
         Resp::fail("arg dict-file no specified")
     }
+}
+
+/// 获取请求中reply参数, 获取优先级: post_data > query_string > url_path > default
+async fn get_reply_param(ctx: HttpContext) -> CompactString {
+    let path = CompactString::new(ctx.req.uri().path());
+    let querystring = CompactString::new(ctx.req.uri().query().unwrap_or(""));
+
+    if let Ok(Some(param)) = ctx.into_opt_json::<PingRequest>().await {
+        if let Some(reply) = param.reply {
+            if !reply.is_empty() {
+                return reply;
+            }
+        }
+    }
+
+    if !querystring.is_empty() {
+        let param = querify(&querystring);
+        for item in param {
+            if item.0 == "reply" {
+                if let Ok(val) = urlencoding::decode(item.1) {
+                    if !val.is_empty() {
+                        return CompactString::new(val);
+                    }
+                }
+            }
+        }
+    }
+
+    if !path.ends_with("/ping") {
+        if let Some(pos) = path.rfind('/') {
+            if let Ok(val) = urlencoding::decode(&path[pos+1..]) {
+                if !val.is_empty() {
+                    return CompactString::new(val);
+                }
+            }
+        }
+    }
+
+    CompactString::new("pong")
 }
