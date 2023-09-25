@@ -14,7 +14,7 @@ lazy_static::lazy_static! {
 pub type DictItems = Arc<Vec<DictItem>>;
 type DictMap = HashMap<CompactString, DictItems>;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct DictItem {
     pub key: CompactString,
     pub value: CompactString,

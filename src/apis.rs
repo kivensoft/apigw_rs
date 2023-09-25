@@ -11,6 +11,7 @@ use localtime::LocalTime;
 use querystring::querify;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use triomphe::Arc;
 
 #[derive(Deserialize)]
 struct PingRequest {
@@ -212,6 +213,7 @@ pub async fn cfg(ctx: HttpContext) -> HttpResult {
     #[derive(Deserialize)]
     struct Req {
         group: Option<CompactString>,
+        groups: Option<Vec<CompactString>>,
     }
 
     #[derive(Serialize)]
@@ -222,7 +224,8 @@ pub async fn cfg(ctx: HttpContext) -> HttpResult {
 
     let url_path = CompactString::new(ctx.req.uri().path());
     let mut param = ctx.into_opt_json::<Req>().await?
-        .unwrap_or(Req { group: None });
+        .unwrap_or(Req { group: None, groups: None });
+
     if param.group.is_none() && !url_path.ends_with("/cfg") {
         if let Some(pos) = url_path.rfind('/') {
             let val = urlencoding::decode(&url_path[pos+1..])?;
@@ -230,11 +233,23 @@ pub async fn cfg(ctx: HttpContext) -> HttpResult {
         }
     }
 
-    if param.group.is_none() {
-        return Resp::fail("param group not find");
+    if param.group.is_none() && param.groups.is_none() {
+        return Resp::fail("param group or groups not find");
     }
 
-    Resp::ok(&Res { config: dict::query(&param.group.unwrap()) })
+    let config = if let Some(group) = param.group {
+        dict::query(&group)
+    } else {
+        let mut tmp_config = Vec::new();
+        for g in param.groups.unwrap() {
+            if let Some(items) = dict::query(&g) {
+                tmp_config.extend_from_slice(items.as_slice());
+            }
+        }
+        Some(Arc::new(tmp_config))
+    };
+
+    Resp::ok(&Res { config })
 }
 
 /// 重新加载配置信息
