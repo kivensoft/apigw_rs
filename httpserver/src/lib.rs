@@ -1,13 +1,14 @@
 use anyhow::Context;
 use compact_str::CompactString;
+use fnv::FnvHashMap;
 use hyper::{body::Buf, header::AsHeaderName, http::HeaderValue};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    sync::{Arc, atomic::AtomicU32, RwLock},
-    collections::HashMap
+    sync::{atomic::AtomicU32, Arc},
+    collections::HashMap, convert::Infallible
 };
 
 pub use compact_str;
@@ -223,7 +224,7 @@ macro_rules! check_result {
         match $op {
             Ok(v) => v,
             Err(e) => {
-                log::error!("{e:?}");
+                log::error!("{:?}", e);
                 return Resp::internal_server_error();
             }
         }
@@ -254,7 +255,7 @@ macro_rules! await_result {
         match $op.await {
             Ok(v) => v,
             Err(e) => {
-                log::error!("{e:?}");
+                log::error!("{:?}", e);
                 return Resp::internal_server_error();
             }
         }
@@ -271,7 +272,7 @@ macro_rules! await_result {
 }
 
 /// http header "Content-Type"
-pub const CONTENT_TYPE: &'static str = "Content-Type";
+pub const CONTENT_TYPE: &str = "Content-Type";
 /// http header "applicatoin/json; charset=UTF-8"
 pub const APPLICATION_JSON: &'static str = "applicatoin/json; charset=UTF-8";
 
@@ -281,8 +282,12 @@ pub type Response = hyper::Response<hyper::Body>;
 pub type HttpResult = anyhow::Result<Response>;
 pub type BoxHttpHandler = Box<dyn HttpHandler>;
 
+type HttpCtxAttrs = Option<HashMap<CompactString, Value>>;
+type Router = FnvHashMap<CompactString, BoxHttpHandler>;
+
+
 #[derive(Error, Debug)]
-pub enum HttpContextError {
+pub enum HttpCtxError {
     #[error("the request body is empty")]
     EmptyBody,
     #[error("read request body error")]
@@ -293,7 +298,7 @@ pub enum HttpContextError {
 
 /// use for HttpServer.run_with_callback
 #[async_trait::async_trait]
-pub trait RunCallback: Send + Sync + 'static {
+pub trait RunCallback {
     async fn handle(self) -> anyhow::Result<()>;
 }
 
@@ -322,11 +327,11 @@ pub struct ApiResult<T> {
 
 /// api function param
 pub struct HttpContext {
-    pub req : Request,         // 请求对象
-    addr    : SocketAddr,      // 请求客户端ip地址
-    id      : u32,             // 请求id(每个请求id唯一)
-    uid     : u32,             // 当前登录用户id(从token中解析, 未登录为0)
-    attr    : HttpContextAttr, // 附加属性(用户自定义)
+    pub req   : Request,         // 请求对象
+    pub addr  : SocketAddr,      // 请求客户端ip地址
+    pub id    : u32,             // 请求id(每个请求id唯一)
+    pub uid   : u32,             // 当前登录用户id(从token中解析, 未登录为0)
+    pub attrs : HttpCtxAttrs, // 附加属性(用户自定义)
 }
 
 /// Build http response object
@@ -348,9 +353,6 @@ pub struct HttpServer {
     middlewares: Vec<Arc<dyn HttpMiddleware>>,
     default_handler: BoxHttpHandler,
 }
-
-type HttpContextAttr = RwLock<HashMap<CompactString, Arc<Value>>>;
-type Router = std::collections::HashMap<CompactString, BoxHttpHandler>;
 
 impl <T> ApiResult<T> {
     pub fn ok(data: T) -> Self {
@@ -420,10 +422,10 @@ impl HttpContext {
     ///     Resp::ok_with_empty()
     /// }
     /// ```
-    pub async fn into_json<T: DeserializeOwned>(self) -> Result<T, HttpContextError> {
+    pub async fn into_json<T: DeserializeOwned>(self) -> Result<T, HttpCtxError> {
         match self.into_opt_json().await? {
             Some(v) => Ok(v),
-            None => Err(HttpContextError::EmptyBody),
+            None => Err(HttpCtxError::EmptyBody),
         }
     }
 
@@ -452,31 +454,13 @@ impl HttpContext {
     ///     Resp::ok_with_empty()
     /// }
     /// ```
-    pub async fn into_opt_json<T: DeserializeOwned>(self) -> Result<Option<T>, HttpContextError> {
+    pub async fn into_opt_json<T: DeserializeOwned>(self) -> Result<Option<T>, HttpCtxError> {
         let body = hyper::body::aggregate(self.req).await?;
-        if body.remaining() > 0 {
+        if body.has_remaining() {
             Ok(serde_json::from_reader(body.reader())?)
         } else {
             Ok(None)
         }
-    }
-
-    /// 返回请求id，每个请求的id都是唯一的
-    pub fn id(&self) -> u32 {
-        self.id
-    }
-
-    /// 返回当前用户的id
-    pub fn uid(&self) -> u32 {
-        self.uid
-    }
-
-    pub fn set_uid(&mut self, uid: u32) {
-        self.uid = uid;
-    }
-
-    pub fn addr(&self) -> SocketAddr {
-        self.addr
     }
 
     /// 获取客户端的真实ip, 获取优先级为X-Real-IP > X-Forwarded-For > socketaddr
@@ -509,12 +493,18 @@ impl HttpContext {
         self.req.headers().get(key)
     }
 
-    pub fn attr<'a>(&'a self, key: &str) -> Option<Arc<Value>> {
-        self.attr.read().unwrap().get(key).map(|v| v.clone())
+    pub fn attr(&self, key: &str) -> Option<&Value> {
+        match &self.attrs {
+            Some(atrr) => atrr.get(key),
+            None => None,
+        }
     }
 
-    pub fn set_attr(&mut self, key: CompactString, value: Value) {
-        self.attr.write().unwrap().insert(key, Arc::new(value));
+    pub fn set_attr<T: Into<Value>>(&mut self, key: CompactString, value: T) {
+        if self.attrs.is_none() {
+            self.attrs = Some(HashMap::default());
+        }
+        self.attrs.as_mut().unwrap().insert(key, value.into());
     }
 
 }
@@ -708,7 +698,7 @@ impl HttpMiddleware for AccessLog {
     async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>) -> HttpResult {
         let start = std::time::Instant::now();
         let ip = ctx.remote_ip();
-        let id = ctx.id();
+        let id = ctx.id;
         let method = ctx.req.method().clone();
         let path = CompactString::new(ctx.req.uri().path());
         log::debug!("[{id:08x}] {method} \x1b[33m{path}\x1b[0m");
@@ -738,13 +728,13 @@ impl HttpServer {
     /// * `use_access_log`: set Log middleware if true
     ///
     pub fn new(prefix: &str, use_access_log: bool) -> Self {
-        let mut middlewares: Vec<Arc<dyn HttpMiddleware>> = Vec::new();
+        let mut middlewares = Vec::<Arc<dyn HttpMiddleware>>::new();
         if use_access_log {
             middlewares.push(Arc::new(AccessLog));
         }
         HttpServer {
             prefix: CompactString::new(prefix),
-            router: std::collections::HashMap::new(),
+            router: FnvHashMap::default(),
             middlewares,
             default_handler: Box::new(Self::handle_not_found),
         }
@@ -766,21 +756,17 @@ impl HttpServer {
     ///
     /// * `path`: api path
     /// * `handler`: handle of api function
-    #[inline]
     pub fn register(&mut self, path: &str, handler: impl HttpHandler) {
         self.router.insert(CompactString::new(path), Box::new(handler));
     }
 
     /// register middleware
+    #[inline]
     pub fn middleware<T: HttpMiddleware> (&mut self, middleware: T) -> Arc<T> {
-        let result = Arc::new(middleware);
-        self.middlewares.push(result.clone());
-        result
+        let res = Arc::new(middleware);
+        self.middlewares.push(res.clone());
+        res
     }
-
-    // pub async fn run(self, addr: std::net::SocketAddr) -> anyhow::Result<()> {
-    //     self.run_with_callbacck(addr, || {}).await
-    // }
 
     /// run http service and enter message loop mode
     ///
@@ -792,7 +778,6 @@ impl HttpServer {
     }
 
     pub async fn run_with_callbacck(self, addr: std::net::SocketAddr, f: impl RunCallback) -> anyhow::Result<()> {
-        use std::convert::Infallible;
 
         struct ServerData { server: HttpServer, id: AtomicU32 }
 
@@ -819,7 +804,7 @@ impl HttpServer {
                             addr,
                             id: data.id.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                             uid: 0,
-                            attr: RwLock::new(HashMap::new()),
+                            attrs: None,
                         };
 
                         let resp = match next.run(ctx).await {
@@ -841,33 +826,6 @@ impl HttpServer {
 
         log::info!("Startup http server on \x1b[34m{addr}\x1b[0m");
         Ok(server.await?)
-    }
-
-    async fn handle_not_found(_: HttpContext) -> HttpResult {
-        Ok(Resp::fail_with_status(hyper::StatusCode::NOT_FOUND, 404, "Not Found")?)
-    }
-
-    pub fn handle_error(err: anyhow::Error) -> Response {
-        match Resp::fail(&err.to_string()) {
-            Ok(val) => val,
-            Err(e) => {
-                log::error!("handle_error except: {e:?}");
-                let mut res = hyper::Response::new(hyper::Body::from("internal server error"));
-                *res.status_mut() = hyper::StatusCode::INTERNAL_SERVER_ERROR;
-                res
-            }
-        }
-    }
-
-    pub fn concat_path(path1: &str, path2: &str) -> String {
-        let mut s = String::with_capacity(path1.len() + path2.len() + 1);
-        s.push_str(path1);
-        if s.as_bytes()[s.len() - 1] != b'/' {
-            s.push('/');
-        }
-        let path2 = if path2.as_bytes()[0] != b'/' { path2 } else { &path2[1..] };
-        s.push_str(path2);
-        return s;
     }
 
     fn find_http_handler(&self, path: &str) -> Option<&dyn HttpHandler> {
@@ -895,5 +853,21 @@ impl HttpServer {
         }
 
         None
+    }
+
+    fn handle_error(err: anyhow::Error) -> Response {
+        match Resp::fail(&err.to_string()) {
+            Ok(val) => val,
+            Err(e) => {
+                log::error!("handle_error except: {e:?}");
+                let mut res = hyper::Response::new(hyper::Body::from("internal server error"));
+                *res.status_mut() = hyper::StatusCode::INTERNAL_SERVER_ERROR;
+                res
+            }
+        }
+    }
+
+    async fn handle_not_found(_: HttpContext) -> HttpResult {
+        Ok(Resp::fail_with_status(hyper::StatusCode::NOT_FOUND, 404, "Not Found")?)
     }
 }

@@ -3,13 +3,12 @@ use std::collections::HashMap;
 use anyhow::{Result, Context};
 use appconfig::Config;
 use compact_str::CompactString;
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::Serialize;
 use triomphe::Arc;
 
-lazy_static::lazy_static! {
-    static ref DICT_MAP: RwLock<DictMap> = RwLock::new(DictMap::new());
-}
+static DICT_MAP: Lazy<RwLock<DictMap>> = Lazy::new(|| RwLock::new(DictMap::new()));
 
 pub type DictItems = Arc<Vec<DictItem>>;
 type DictMap = HashMap<CompactString, DictItems>;

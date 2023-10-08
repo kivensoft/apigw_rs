@@ -132,10 +132,12 @@ impl Authentication {
         let ds_count = ds.len();
 
         for k in ds {
-            log::trace!("清理过期的token: {k}");
             tc.pop(&k);
+            log::trace!("清理过期的token: {k}");
         }
-        log::trace!("总计清理token过期项: {}", ds_count);
+        if ds_count > 0 {
+            log::trace!("总计清理token过期项: {}", ds_count);
+        }
     }
 
     // 启动基于tokio的异步定时清理任务
@@ -158,7 +160,7 @@ impl httpserver::HttpMiddleware for Authentication {
         // 解析token并进行校验，校验成功返回uid
         if let Some(token) = Self::get_token(&ctx)? {
             if let Err(e) = self.verify_token(&token) {
-                log::error!("[{:08x}] AUTH verify token error: {:?}", ctx.id(), e);
+                log::error!("[{:08x}] AUTH verify token error: {:?}", ctx.id, e);
                 // anyhow::bail!(e)
                 ctx.req.headers_mut().remove(jwt::AUTHORIZATION);
             }

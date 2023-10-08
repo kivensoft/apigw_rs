@@ -6,11 +6,12 @@ use hyper::{
     StatusCode, Uri,
 };
 use localtime::LocalTime;
+use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
 use serde::Serialize;
 use smallstr::SmallString;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{VecDeque, HashMap},
     fmt::Write,
     time::Duration,
 };
@@ -18,11 +19,10 @@ use std::{
 use crate::AppGlobal;
 
 type ServiceInfoList = VecDeque<Box<ServiceInfo>>;
+type ServicesType = Mutex<HashMap<CompactString, ServiceInfoList>>;
 
-lazy_static::lazy_static! {
-    static ref SERVICES: Mutex<HashMap<CompactString, ServiceInfoList>> =
-        Mutex::new(HashMap::new());
-}
+static SERVICES: Lazy<ServicesType> = Lazy::new(|| Mutex::new(HashMap::default()));
+static CLIENT: OnceCell<Client<HttpConnector>> = OnceCell::new();
 
 struct ServiceInfo {
     endpoint: CompactString,
@@ -40,6 +40,13 @@ pub struct ServiceItem {
 pub struct ServiceGroup {
     path: CompactString,
     services: Vec<ServiceItem>,
+}
+
+/// 初始化客户端对象, 参数为连接超时设置
+pub fn init_client(val: Option<Duration>) {
+    let mut hc = HttpConnector::new();
+    hc.set_connect_timeout(val);
+    CLIENT.set(Client::builder().build(hc)).expect("init http client error");
 }
 
 /// 注册服务, 返回true代表新注册服务, false代表服务续租
@@ -176,15 +183,11 @@ pub async fn proxy_handler(mut ctx: HttpContext) -> Result<Response> {
 
     // 将ctx中的req作为转发参数使用
     *ctx.req.uri_mut() = uri;
+    log::debug!("[{:08x}] FORWARD {} => {}", ctx.id, path, endpoint);
 
-    let mut hc = HttpConnector::new();
-    hc.set_connect_timeout(Some(Duration::from_secs(
-        AppGlobal::get().connect_timeout as u64,
-    )));
-    let client = Client::builder().build(hc);
-    log::debug!("[{:08x}] FORWARD {} => {}", ctx.id(), path, endpoint);
+    let client = CLIENT.get().expect("uninit http client");
+    let req_id = ctx.id;
 
-    let req_id = ctx.id();
     match client.request(ctx.req).await {
         Ok(r) => Ok(r),
         Err(e) => {

@@ -4,7 +4,7 @@ mod dict;
 mod proxy;
 mod syssrv;
 
-use std::{fmt::Write, time::SystemTime};
+use std::{fmt::Write, time::{SystemTime, Duration}};
 
 use anyhow::Context;
 use httpserver::HttpServer;
@@ -144,6 +144,10 @@ fn main() {
         max_token_cache_size,
         10 * 60,
     ));
+
+    proxy::init_client(Some(Duration::from_secs(
+        AppGlobal::get().connect_timeout as u64,
+    )));
 
     httpserver::register_apis!(srv, "gw/",
         "ping": apis::ping,
