@@ -26,9 +26,9 @@ const APP_VER: &str = include_str!(concat!(env!("OUT_DIR"), "/.version"));
 const SCHEDULED_SECS: u64 = 180;
 
 appconfig::appglobal_define!(app_global, AppGlobal,
-    connect_timeout: u32,
+    connect_timeout      : u32,
     heart_break_live_time: u32,
-    startup_time: u64,
+    startup_time         : u64,
 );
 
 appconfig::appconfig_define!(app_conf, AppConf,
@@ -36,11 +36,12 @@ appconfig::appconfig_define!(app_conf, AppConf,
     log_file    : String => ["F",  "log-file",     "LogFile",           "log filename"],
     log_max     : String => ["M",  "log-max",      "LogFileMaxSize",    "log file max size (unit: k/m/g)"],
     log_async   : bool   => ["",   "log-async",    "LogAsync",          "enable asynchronous logging"],
-    no_console  : bool   => ["",   "log-max",      "NoConsole",         "prohibit outputting logs to the console"],
+    no_console  : bool   => ["",   "no-console",   "NoConsole",         "prohibit outputting logs to the console"],
     install     : bool   => ["",   "install",      "Install",           "install as a system Linux service"],
     listen      : String => ["l",  "listen",       "Listen",            "http service ip:port"],
     dict_file   : String => ["d",  "dict-file",    "DictFile",          "set dict config file"],
     threads     : String => ["t",  "threads",      "Threads",           "set tokio runtime worker threads"],
+    ignore_token: bool   => ["",   "igonre-token", "IgnoreToken",       "ignore token and do not perform verification"],
     mtcs        : String => ["",   "mtcs",         "MaxTokenCacheSize", "max token cache size"],
     api_expire  : String => ["",   "api-expire",   "ApiExpire",         "api service expire time (unit: seconds)"],
     conn_timeout: String => ["",   "conn-timeout", "ConnectTimeout",    "service connect timeout (unit: seconds)"],
@@ -51,20 +52,21 @@ appconfig::appconfig_define!(app_conf, AppConf,
 impl Default for AppConf {
     fn default() -> Self {
         Self {
-            log_level:    String::from("info"),
-            log_file:     String::with_capacity(0),
-            log_max:      String::from("10m"),
-            log_async:    false,
-            no_console:   false,
-            install:      false,
-            listen:       String::from("127.0.0.1:6400"),
-            dict_file:    String::new(),
-            threads:      String::from("1"),
-            mtcs:         String::from("128"),
-            api_expire:   String::from("90"),
+            log_level   : String::from("info"),
+            log_file    : String::with_capacity(0),
+            log_max     : String::from("10m"),
+            log_async   : false,
+            no_console  : false,
+            install     : false,
+            listen      : String::from("127.0.0.1:6400"),
+            dict_file   : String::new(),
+            threads     : String::from("1"),
+            ignore_token: false,
+            mtcs        : String::from("128"),
+            api_expire  : String::from("90"),
             conn_timeout: String::from("3"),
             token_issuer: String::from(APP_NAME),
-            token_key:    String::from("Kivensoft Copyright 2023"),
+            token_key   : String::from("Kivensoft Copyright 2023"),
         }
     }
 }
@@ -138,12 +140,16 @@ fn main() {
     let mut srv = HttpServer::new("/api/", true);
     srv.default_handler(proxy::proxy_handler);
 
-    let authenticaton = srv.middleware(auth::Authentication::new(
-        &ac.token_key,
-        &ac.token_issuer,
-        max_token_cache_size,
-        10 * 60,
-    ));
+    let authenticaton = if ac.ignore_token {
+        None
+    } else {
+        Some(srv.middleware(auth::Authentication::new(
+            &ac.token_key,
+            &ac.token_issuer,
+            max_token_cache_size,
+            10 * 60,
+        )))
+    };
 
     proxy::init_client(Some(Duration::from_secs(
         AppGlobal::get().connect_timeout as u64,
@@ -165,7 +171,9 @@ fn main() {
 
     let async_fn = async move {
         // 启动token缓存定时清理任务
-        auth::Authentication::start_recycle_task(authenticaton, SCHEDULED_SECS);
+        if !ac.ignore_token {
+            auth::Authentication::start_recycle_task(authenticaton.unwrap(), SCHEDULED_SECS);
+        }
         // 运行http server主服务
         srv.run(addr).await.context("http server run error").unwrap();
     };

@@ -830,7 +830,7 @@ impl HttpServer {
 
     fn find_http_handler(&self, path: &str) -> Option<&dyn HttpHandler> {
         // 前缀不匹配
-        if !path.starts_with(self.prefix.as_str()) {
+        if !self.prefix.is_empty() && !path.starts_with(self.prefix.as_str()) {
             return None;
         }
 

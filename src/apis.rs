@@ -108,7 +108,10 @@ pub async fn query(ctx: HttpContext) -> HttpResult {
     #[derive(Serialize)]
     struct Res {
         #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<CompactString>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         services: Option<Vec<proxy::ServiceItem>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         list: Option<Vec<Item>>,
     }
 
@@ -130,7 +133,7 @@ pub async fn query(ctx: HttpContext) -> HttpResult {
     if let Some(path) = &param.path {
         log::debug!("查找: {path}");
         let services = proxy::service_query(path);
-        return Resp::ok(&Res { services, list: None, })
+        return Resp::ok(&Res { path: param.path.clone(), services, list: None, })
     }
 
     if let Some(paths) = param.paths {
@@ -143,7 +146,7 @@ pub async fn query(ctx: HttpContext) -> HttpResult {
                 });
             }
         }
-        return Resp::ok(&Res { services: None, list: Some(list) })
+        return Resp::ok(&Res { path: None, services: None, list: Some(list) })
     }
 
     Resp::ok_with_empty()

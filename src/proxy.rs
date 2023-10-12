@@ -3,7 +3,7 @@ use compact_str::{CompactString, ToCompactString};
 use httpserver::{HttpContext, Resp, Response};
 use hyper::{
     client::{Client, HttpConnector},
-    StatusCode, Uri,
+    StatusCode, Uri, body::to_bytes, Body,
 };
 use localtime::LocalTime;
 use once_cell::sync::{Lazy, OnceCell};
@@ -170,6 +170,10 @@ pub fn service_query(path: &str) -> Option<Vec<ServiceItem>> {
 }
 
 pub async fn proxy_handler(mut ctx: HttpContext) -> Result<Response> {
+    if log::log_enabled!(log::Level::Trace) {
+        ctx = log_request(ctx).await;
+    }
+
     let path = ctx.req.uri().path().to_compact_string();
     // 获取path对应的endpoint，找不到直接返回service not found错误
     let endpoint = match get_service_endpoint(&path) {
@@ -189,7 +193,13 @@ pub async fn proxy_handler(mut ctx: HttpContext) -> Result<Response> {
     let req_id = ctx.id;
 
     match client.request(ctx.req).await {
-        Ok(r) => Ok(r),
+        Ok(r) => Ok(
+            if log::log_enabled!(log::Level::Trace) {
+                log_response(req_id, r).await
+            } else {
+                r
+            }
+        ),
         Err(e) => {
             unregister_service_by_endpoint(&endpoint);
             log::error!("[{req_id:08x}] FORWARD {path} error: {e:?}");
@@ -239,4 +249,76 @@ fn unregister_service_by_endpoint(endpoint: &str) {
         v.retain(|s| s.endpoint.as_str() != endpoint);
         !v.is_empty()
     });
+}
+
+async fn log_request(mut ctx: HttpContext) -> HttpContext {
+    let req = &ctx.req;
+    let mut text = String::new();
+
+    // 输出header
+    write!(text, "{}http request[{}] >>>{}\n",
+        ansicolor::G,
+        ctx.id,
+        ansicolor::Z,
+    ).unwrap();
+    write!(text, "{} {} {:?}\n",
+        req.method(),
+        req.uri().path_and_query().unwrap(),
+        req.version()
+    ).unwrap();
+
+    for (k, v) in req.headers() {
+        write!(text, "{}: {}\n", k.as_str(), v.to_str().unwrap()).unwrap();
+    }
+
+    text.push('\n');
+
+    // 输出body
+    let (parts, body) = ctx.req.into_parts();
+    let body = to_bytes(body).await.unwrap();
+
+    match String::from_utf8(body.to_vec()) {
+        Ok(s) => text.push_str(&s),
+        Err(_) => text.push_str("<binary>"),
+    }
+
+    log::trace!("{}", text);
+
+    let body = Body::from(body);
+    ctx.req = hyper::Request::from_parts(parts, body);
+    ctx
+}
+
+async fn log_response(req_id: u32, res: Response) -> Response {
+    let mut text = String::new();
+
+    // 输出header
+    write!(text, "{}http response[{}] >>>{}\n",
+        ansicolor::B,
+        req_id,
+        ansicolor::Z,
+    ).unwrap();
+    write!(text, "{:?} {}\n",
+        res.version(),
+        res.status().to_string(),
+    ).unwrap();
+
+    for (k, v) in res.headers() {
+        write!(text, "{}: {}\n", k.as_str(), v.to_str().unwrap()).unwrap();
+    }
+
+    text.push('\n');
+
+    // 输出body
+    let (parts, body) = res.into_parts();
+    let body = to_bytes(body).await.unwrap();
+
+    match String::from_utf8(body.to_vec()) {
+        Ok(s) => text.push_str(&s),
+        Err(_) => text.push_str("<binary>"),
+    }
+
+    log::trace!("{}", text);
+
+    Response::from_parts(parts, Body::from(body))
 }

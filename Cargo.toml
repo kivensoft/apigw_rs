@@ -1,7 +1,7 @@
 # cargo build --release --target=x86_64-unknown-linux-musl
 [package]
 name = "apigw"
-version = "0.9.6"
+version = "0.9.7"
 authors = ["kiven <kivensoft@gmail.com>"]
 edition = "2021"
 description = "intelligent community api gateway"
@@ -48,9 +48,9 @@ smallstr = "0.3" # 基于栈的字符串
 rand = "0.8" # 最广泛使用的随机数生成库
 base64 = "0.21" # base64编解码库
 md-5 = "0.10" # 基于rust-crypto的md5算法库
-asynclog = { version = "1.0", path = "asynclog" } # 支持同步和异步两种方式的迷你日志实现库
-appconfig = { version = "1.0", path = "appconfig" } # 支持命令行参数解析和配置文件参数解析的库
-ansicolor = { version = "1.0", path = "ansicolor" } # 支持终端ansi颜色的库
+appconfig = { version = "1.0", git = "https://gitee.com/kivensoft/appconfig_rs.git" } # 支持命令行参数解析和配置文件参数解析的库
+ansicolor = { version = "1.0", git = "https://gitee.com/kivensoft/ansicolor_rs.git" } # 支持终端ansi颜色的库
+asynclog = { version = "1.0", git = "https://gitee.com/kivensoft/asynclog_rs.git" } # 支持同步和异步两种方式的迷你日志实现库
+localtime = { version = "1.0", git = "https://gitee.com/kivensoft/localtime_rs.git" } # 本地时间序列化反序列化库
+jwt = { version = "1.0", git = "https://gitee.com/kivensoft/jwt_rs.git" } # 迷你的http库
 httpserver = { version = "1.0", path = "httpserver" } # 迷你的http库
-localtime = { version = "1.0", path = "localtime" } # 本地时间序列化反序列化库
-jwt = { version = "1.0", path = "jwt" } # 迷你的http库
