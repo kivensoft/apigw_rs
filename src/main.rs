@@ -4,14 +4,14 @@ mod dict;
 mod proxy;
 mod syssrv;
 
-use std::{fmt::Write, time::{SystemTime, Duration}};
+use std::{fmt::Write, time::SystemTime};
 
-use anyhow::Context;
+use compact_str::CompactString;
 use httpserver::HttpServer;
 use smallstr::SmallString;
 
 const BANNER: &str = r#"
-    ___          _    ______      __  Kivensoft %
+    ___          _    ______      __  Kivensoft ?
    /   |  ____  (_)  / ____/___ _/ /____ _      ______ ___  __
   / /| | / __ \/ /  / / __/ __ `/ __/ _ \ | /| / / __ `/ / / /
  / ___ |/ /_/ / /  / /_/ / /_/ / /_/  __/ |/ |/ / /_/ / /_/ /
@@ -19,14 +19,11 @@ const BANNER: &str = r#"
       /_/                                            /____/
 "#;
 
-const APP_NAME: &str = "apigw";
+const APP_NAME: &str = include_str!(concat!(env!("OUT_DIR"), "/.app_name"));
 /// app版本号, 来自编译时由build.rs从cargo.toml中读取的版本号(读取内容写入.version文件)
 const APP_VER: &str = include_str!(concat!(env!("OUT_DIR"), "/.version"));
 
-const SCHEDULED_SECS: u64 = 180;
-
 appconfig::appglobal_define!(app_global, AppGlobal,
-    connect_timeout      : u32,
     heart_break_live_time: u32,
     startup_time         : u64,
 );
@@ -35,18 +32,18 @@ appconfig::appconfig_define!(app_conf, AppConf,
     log_level   : String => ["L",  "log-level",    "LogLevel",          "log level(trace/debug/info/warn/error/off)"],
     log_file    : String => ["F",  "log-file",     "LogFile",           "log filename"],
     log_max     : String => ["M",  "log-max",      "LogFileMaxSize",    "log file max size (unit: k/m/g)"],
-    log_async   : bool   => ["",   "log-async",    "LogAsync",          "enable asynchronous logging"],
     no_console  : bool   => ["",   "no-console",   "NoConsole",         "prohibit outputting logs to the console"],
     install     : bool   => ["",   "install",      "Install",           "install as a system Linux service"],
     listen      : String => ["l",  "listen",       "Listen",            "http service ip:port"],
     dict_file   : String => ["d",  "dict-file",    "DictFile",          "set dict config file"],
     threads     : String => ["t",  "threads",      "Threads",           "set tokio runtime worker threads"],
-    ignore_token: bool   => ["",   "igonre-token", "IgnoreToken",       "ignore token and do not perform verification"],
     mtcs        : String => ["",   "mtcs",         "MaxTokenCacheSize", "max token cache size"],
+    context_path: String => ["",   "context-path", "ContextPath",       "http request content path"],
+    gw_prefix   : String => ["",   "gw-prefix",    "GwPrefix",          "Gateway path prefix"],
     api_expire  : String => ["",   "api-expire",   "ApiExpire",         "api service expire time (unit: seconds)"],
     conn_timeout: String => ["",   "conn-timeout", "ConnectTimeout",    "service connect timeout (unit: seconds)"],
-    token_issuer: String => ["i",  "token-issuer", "TokenIssuer",       "token issuer"],
-    token_key   : String => ["k",  "token-key",    "TokenKey",          "jwt token key"],
+    token_issuer: String => ["i",  "token-issuer", "TokenIssuer",       "jwt token issuer, when this value is set, the iss of token will be verified"],
+    token_key   : String => ["k",  "token-key",    "TokenKey",          "jwt token key, when this value if set, proxy will add header X-Token-Verified true or false"],
 );
 
 impl Default for AppConf {
@@ -55,18 +52,18 @@ impl Default for AppConf {
             log_level   : String::from("info"),
             log_file    : String::with_capacity(0),
             log_max     : String::from("10m"),
-            log_async   : false,
             no_console  : false,
             install     : false,
             listen      : String::from("127.0.0.1:6400"),
-            dict_file   : String::new(),
-            threads     : String::from("1"),
-            ignore_token: false,
+            dict_file   : String::with_capacity(0),
+            threads     : String::from("2"),
             mtcs        : String::from("128"),
+            context_path: String::with_capacity(0),
+            gw_prefix   : String::from("/gw"),
             api_expire  : String::from("90"),
             conn_timeout: String::from("3"),
-            token_issuer: String::from(APP_NAME),
-            token_key   : String::from("Kivensoft Copyright 2023"),
+            token_issuer: String::with_capacity(0),
+            token_key   : String::with_capacity(0),
         }
     }
 }
@@ -74,6 +71,12 @@ impl Default for AppConf {
 /// 获取当前时间基于UNIX_EPOCH的秒数
 fn unix_timestamp() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
+}
+
+macro_rules! arg_err {
+    ($text:literal) => {
+        concat!("arg ", $text, " format error")
+    };
 }
 
 fn init() -> bool {
@@ -93,8 +96,7 @@ fn init() -> bool {
     }
 
     AppGlobal::init(AppGlobal {
-        connect_timeout: ac.conn_timeout.parse().expect("arg conn-timeout is not a number"),
-        heart_break_live_time: ac.api_expire.parse().expect("arg api-expire is not a number"),
+        heart_break_live_time: ac.api_expire.parse().expect(arg_err!("api-expire")),
         startup_time: unix_timestamp(),
     });
 
@@ -102,21 +104,23 @@ fn init() -> bool {
         ac.listen.insert_str(0, "0.0.0.0");
     };
 
-    let log_level = asynclog::parse_level(&ac.log_level).expect("arg log-level format error");
-    let log_max = asynclog::parse_size(&ac.log_max).expect("arg log-max format error");
+    let log_level = asynclog::parse_level(&ac.log_level).expect(arg_err!("log-level"));
+    let log_max = asynclog::parse_size(&ac.log_max).expect(arg_err!("log-max"));
 
     if log_level == log::Level::Trace {
         println!("config setting: {ac:#?}\n");
     }
 
     asynclog::init_log(log_level, ac.log_file.clone(), log_max,
-        !ac.no_console, ac.log_async).expect("init log error");
-    asynclog::set_level("mio".to_owned(), log::LevelFilter::Info);
-    asynclog::set_level("want".to_owned(), log::LevelFilter::Info);
+        !ac.no_console, true).expect("init log error");
+    asynclog::set_level("hyper_util".to_owned(), log::LevelFilter::Info);
 
-    if let Some((s1, s2)) = BANNER.split_once('%') {
+    if let Some((s1, s2)) = BANNER.split_once('?') {
         buf.clear();
-        write!(buf, "{s1}{APP_VER}{s2}").unwrap();
+        buf.push_str(s1);
+        buf.push_str(APP_VER);
+        // buf.push_str(&s2[APP_VER.len() - 1..]);
+        buf.push_str(s2);
         appconfig::print_banner(&buf, true);
     }
 
@@ -128,34 +132,18 @@ fn init() -> bool {
     true
 }
 
-// #[tokio::main(worker_threads = 4)]
-// #[tokio::main(flavor = "current_thread")]
-fn main() {
-    if !init() { return; }
-    let ac = AppConf::get();
+fn register_apis(srv: &mut HttpServer, ac: &AppConf) {
+    let gps = ac.gw_prefix.as_bytes();
+    let mut gw_path = CompactString::with_capacity(0);
+    if gps[0] != b'/' {
+        gw_path.push('/');
+    }
+    gw_path.push_str(&ac.gw_prefix);
+    if gps[gps.len() - 1] != b'/' {
+        gw_path.push('/');
+    }
 
-    let max_token_cache_size = ac.mtcs.parse().expect("arg mtcs not a int number");
-    let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
-
-    let mut srv = HttpServer::new("/api/", true);
-    srv.default_handler(proxy::proxy_handler);
-
-    let authenticaton = if ac.ignore_token {
-        None
-    } else {
-        Some(srv.middleware(auth::Authentication::new(
-            &ac.token_key,
-            &ac.token_issuer,
-            max_token_cache_size,
-            10 * 60,
-        )))
-    };
-
-    proxy::init_client(Some(Duration::from_secs(
-        AppGlobal::get().connect_timeout as u64,
-    )));
-
-    httpserver::register_apis!(srv, "gw/",
+    httpserver::register_apis!(srv, &gw_path,
         "ping": apis::ping,
         "ping/*": apis::ping,
         "token": apis::token,
@@ -166,43 +154,69 @@ fn main() {
         "unreg": apis::unreg,
         "cfg": apis::cfg,
         "cfg/*": apis::cfg,
-        "reload-cfg": apis::reload_cfg,
+        "recfg": apis::recfg,
     );
+}
 
-    let async_fn = async move {
-        // 启动token缓存定时清理任务
-        if !ac.ignore_token {
-            auth::Authentication::start_recycle_task(authenticaton.unwrap(), SCHEDULED_SECS);
-        }
-        // 运行http server主服务
-        srv.run(addr).await.context("http server run error").unwrap();
+// #[tokio::main(worker_threads = 4)]
+// #[tokio::main(flavor = "current_thread")]
+fn main() {
+    if !init() { return; }
+    let ac = AppConf::get();
+
+    let max_token_cache_size = ac.mtcs.parse().expect(arg_err!("mtcs"));
+    let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
+
+    let mut srv = HttpServer::new();
+    // 设置请求上下文路径
+    srv.set_prefix(&ac.context_path);
+    // 路由支持1级子路径匹配
+    srv.set_fuzzy_find(httpserver::FuzzyFind::One);
+    // 添加日志中间件
+    srv.set_middleware(httpserver::AccessLog);
+    // 缺省处理函数改为反向代理处理函数
+    srv.set_default_handler(proxy::proxy_handler);
+
+    if !ac.token_key.is_empty() {
+        // 添加token校验中间件
+        srv.set_middleware(auth::Authentication::new(
+            &ac.token_key,
+            &ac.token_issuer,
+            max_token_cache_size,
+            10 * 60,
+        ))
     };
 
-    let threads = ac.threads.parse::<usize>().expect("arg threads is not a number");
+    // 注册网关接口
+    register_apis(&mut srv, ac);
+
+    let async_fn = async move {
+        // 运行http server主服务
+        srv.run(addr).await.expect("http server run error");
+    };
+
+    let threads = ac.threads.parse::<usize>().expect(arg_err!("threads"));
 
     #[cfg(not(feature = "multi_thread"))]
-    {
+    let mut builder = {
         assert!(threads == 1, "{APP_NAME} current version unsupport multi-threads");
-
         tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async_fn);
-    }
+    };
 
     #[cfg(feature = "multi_thread")]
-    {
-        assert!(threads >= 0 && threads <= 256, "multi-threads range in 0-256");
+    let mut builder = {
+        assert!(threads <= 256, "multi-threads range in 0-256");
 
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         if threads > 0 {
             builder.worker_threads(threads);
         }
 
-        builder.enable_all()
-            .build()
-            .unwrap()
-            .block_on(async_fn)
-    }
+        builder
+    };
+
+    builder.enable_all()
+        .build()
+        .unwrap()
+        .block_on(async_fn)
 }

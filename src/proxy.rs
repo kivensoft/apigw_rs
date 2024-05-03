@@ -1,28 +1,30 @@
-use anyhow::{Context, Result};
-use compact_str::{CompactString, ToCompactString};
-use httpserver::{HttpContext, Resp, Response};
-use hyper::{
-    client::{Client, HttpConnector},
-    StatusCode, Uri, body::to_bytes, Body,
+use compact_str::CompactString;
+use dashmap::DashMap;
+use http_body_util::{BodyExt, Full};
+use httpserver::{
+    http_bail, if_else, log_error, log_info, Bytes, HttpContext, HttpResponse, HttpResult, Resp,
+    Response,
+};
+use hyper::{StatusCode, Uri};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::{TokioExecutor, TokioTimer},
 };
 use localtime::LocalTime;
-use once_cell::sync::{Lazy, OnceCell};
-use parking_lot::Mutex;
 use serde::Serialize;
 use smallstr::SmallString;
-use std::{
-    collections::{VecDeque, HashMap},
-    fmt::Write,
-    time::Duration,
-};
 
-use crate::AppGlobal;
+use std::{collections::VecDeque, fmt::Write, sync::OnceLock, time::Duration};
 
-type ServiceInfoList = VecDeque<Box<ServiceInfo>>;
-type ServicesType = Mutex<HashMap<CompactString, ServiceInfoList>>;
+use crate::{AppConf, AppGlobal};
 
-static SERVICES: Lazy<ServicesType> = Lazy::new(|| Mutex::new(HashMap::default()));
-static CLIENT: OnceCell<Client<HttpConnector>> = OnceCell::new();
+type ServiceInfoList = VecDeque<ServiceInfo>;
+type ServicesType = DashMap<CompactString, ServiceInfoList>;
+
+/// 已注册的服务列表
+static SERVICES: OnceLock<ServicesType> = OnceLock::new();
+/// http request 请求的客户端，内部使用缓存池
+static CLIENT: OnceLock<Client<HttpConnector, Full<Bytes>>> = OnceLock::new();
 
 struct ServiceInfo {
     endpoint: CompactString,
@@ -42,13 +44,6 @@ pub struct ServiceGroup {
     services: Vec<ServiceItem>,
 }
 
-/// 初始化客户端对象, 参数为连接超时设置
-pub fn init_client(val: Option<Duration>) {
-    let mut hc = HttpConnector::new();
-    hc.set_connect_timeout(val);
-    CLIENT.set(Client::builder().build(hc)).expect("init http client error");
-}
-
 /// 注册服务, 返回true代表新注册服务, false代表服务续租
 pub fn register_service(path: &str, endpoint: &str) -> bool {
     let hblt = AppGlobal::get().heart_break_live_time as i64;
@@ -59,45 +54,48 @@ pub fn register_service(path: &str, endpoint: &str) -> bool {
         0
     };
 
-    let mut ret = true;
-    let mut services = SERVICES.lock();
-
-    match services.get_mut(path) {
+    match get_services().get_mut(path) {
         // 路径有注册的服务
-        Some(svr_list) => match svr_list.iter_mut().find(|v| v.endpoint == endpoint) {
+        Some(mut svr_list) => match svr_list
+            .iter_mut()
+            .find(|v| v.endpoint.as_str() == endpoint)
+        {
             // 对应端点的服务找到，更新过期时间
             Some(svr) => {
                 svr.expire = expire;
-                ret = false;
+                log::trace!("注册服务: 更新服务{}:{}的过期时间", endpoint, path);
+                return false;
             }
             // 找不到，创建服务并添加到链表末尾
-            None => svr_list.push_back(Box::new(ServiceInfo {
-                endpoint: endpoint.to_compact_string(),
+            None => svr_list.push_back(ServiceInfo {
+                endpoint: CompactString::new(endpoint),
                 expire,
-            })),
+            }),
         },
         // 路径对应没有服务，创建服务及链表
         None => {
-            let mut slist = ServiceInfoList::new();
-            slist.push_back(Box::new(ServiceInfo {
-                endpoint: endpoint.to_compact_string(),
+            let mut svr_list = ServiceInfoList::new();
+            svr_list.push_back(ServiceInfo {
+                endpoint: CompactString::new(endpoint),
                 expire,
-            }));
-            services.insert(path.to_compact_string(), slist);
+            });
+            get_services().insert(CompactString::new(path), svr_list);
         }
     };
 
-    ret
+    true
 }
 
 /// 取消注册服务
 pub fn unregister_service(path: &str, endpoint: &str) {
-    let mut services = SERVICES.lock();
-    let svr_list = services.get_mut(path);
-    if let Some(svr_list) = svr_list {
-        svr_list.retain(|v| v.endpoint != endpoint);
+    if let Some(mut svr_list) = get_services().get_mut(path) {
+        let old_len = svr_list.len();
+        svr_list.retain(|v| v.endpoint.as_str() != endpoint);
+        if old_len > svr_list.len() {
+            log::trace!("删除服务：{}:{}", endpoint, path);
+        }
         if svr_list.is_empty() {
-            services.remove(path);
+            get_services().remove(path);
         }
     };
 }
@@ -105,50 +103,57 @@ pub fn unregister_service(path: &str, endpoint: &str) {
 /// 列出当前注册的所有服务信息
 pub fn service_status() -> Vec<ServiceGroup> {
     let now = LocalTime::now().timestamp();
+    let mut del_keys = Vec::new();
+    let services = get_services();
 
-    SERVICES.lock().iter()
-        .filter_map(|(k, v)| {
-            let services: Vec<ServiceItem> = v.iter()
-                .filter_map(|s| {
-                    if s.expire < now && s.expire != 0 {
-                        return None;
-                    }
 
-                    Some(ServiceItem {
-                        endpoint: s.endpoint.clone(),
-                        expire: if s.expire != 0 {
-                            Some(LocalTime::from_unix_timestamp(s.expire))
-                        } else {
-                            None
-                        },
-                    })
+    let result = services
+        .iter()
+        .filter_map(|item| {
+            let services: Vec<ServiceItem> = item
+                .value()
+                .iter()
+                .filter(|v| v.expire == 0 || v.expire >= now)
+                .map(|v| ServiceItem {
+                    endpoint: v.endpoint.clone(),
+                    expire: if_else!(
+                        v.expire != 0,
+                        Some(LocalTime::from_unix_timestamp(v.expire)),
+                        None
+                    ),
                 })
                 .collect();
 
             if !services.is_empty() {
                 Some(ServiceGroup {
-                    path: k.to_compact_string(),
+                    path: CompactString::new(item.key()),
                     services,
                 })
             } else {
+                del_keys.push(CompactString::new(item.key()));
                 None
             }
         })
-        .collect()
+        .collect();
+
+    if !del_keys.is_empty() {
+        for key in del_keys {
+            services.remove(&key);
+        }
+    }
+
+    result
 }
 
 // 查询指定路径的可用服务信息，路径可以是子路径，系统会自动进行递归查找，直到找到最匹配的服务
-pub fn service_query(path: &str) -> Option<Vec<ServiceItem>> {
-    let services = SERVICES.lock();
-    let mut pos = Some(path.len());
+pub fn service_query(mut path: &str) -> Option<Vec<ServiceItem>> {
+    let now = LocalTime::now().timestamp();
+    let services = get_services();
 
-    while let Some(pos2) = pos {
-        let path = &path[0..pos2];
-
+    while !path.is_empty() {
         if let Some(svr_list) = services.get(path) {
-            let now = LocalTime::now().timestamp();
-
-            let items = svr_list.iter()
+            let items: Vec<ServiceItem> = svr_list
+                .iter()
                 .filter(|s| s.expire > now || s.expire == 0)
                 .map(|s| ServiceItem {
                     endpoint: s.endpoint.clone(),
@@ -158,64 +163,66 @@ pub fn service_query(path: &str) -> Option<Vec<ServiceItem>> {
                         None
                     },
                 })
-                .collect::<Vec<ServiceItem>>();
+                .collect();
 
-            return if !items.is_empty() { Some(items) } else { None };
+            if items.is_empty() {
+                services.remove(path);
+                return None;
+            } else {
+                return Some(items);
+            }
         }
 
-        pos = path.rfind('/');
+        path = &path[..path.rfind('/').unwrap_or(0)];
     }
 
     None
 }
 
-pub async fn proxy_handler(mut ctx: HttpContext) -> Result<Response> {
-    if log::log_enabled!(log::Level::Trace) {
-        ctx = log_request(ctx).await;
+/// 反向代理函数
+pub async fn proxy_handler(ctx: HttpContext) -> HttpResponse {
+    let path = CompactString::new(ctx.req.uri().path());
+    let path_and_query = ctx.req.uri().path_and_query().unwrap().as_str();
+    let mut finded = false;
+
+    // 获取path对应的endpoint，找不到直接返回service not found错误
+    while let Some(endpoint) = get_service_endpoint(&path) {
+        finded = true;
+        let uri = create_uri(&endpoint, path_and_query)?;
+        log_info!(ctx.id, "[FORWARD] {path} => {endpoint}");
+
+        // 复制ctx中的req作为转发参数使用
+        let mut req_mut = ctx.req.clone();
+        *req_mut.uri_mut() = uri;
+
+        match get_client().request(req_mut).await {
+            // 成功后直接向客户端返回后台服务返回的数据
+            Ok(res) => {
+                let (parts, body) = res.into_parts();
+                let body = body.collect().await?.to_bytes();
+                return Ok(Response::from_parts(parts, Full::new(body)));
+            }
+            Err(e) => {
+                unregister_service_by_endpoint(&endpoint);
+                log_error!(ctx.id, "[FORWARD] {endpoint}{path} error: {e:?}");
+            }
+        }
     }
 
-    let path = ctx.req.uri().path().to_compact_string();
-    // 获取path对应的endpoint，找不到直接返回service not found错误
-    let endpoint = match get_service_endpoint(&path) {
-        Some(v) => v,
-        None => return Resp::fail_with_status(StatusCode::NOT_FOUND, 404, "Not Found"),
-    };
-
-    let path_and_query = ctx.req.uri().path_and_query().map(|v| v.as_str())
-        .unwrap_or("/");
-    let uri = gen_uri(&endpoint, path_and_query)?;
-
-    // 将ctx中的req作为转发参数使用
-    *ctx.req.uri_mut() = uri;
-    log::debug!("[{:08x}] FORWARD {} => {}", ctx.id, path, endpoint);
-
-    let client = CLIENT.get().expect("uninit http client");
-    let req_id = ctx.id;
-
-    match client.request(ctx.req).await {
-        Ok(r) => Ok(
-            if log::log_enabled!(log::Level::Trace) {
-                log_response(req_id, r).await
-            } else {
-                r
-            }
-        ),
-        Err(e) => {
-            unregister_service_by_endpoint(&endpoint);
-            log::error!("[{req_id:08x}] FORWARD {path} error: {e:?}");
-            Resp::internal_server_error()
-        }
+    if finded {
+        log_info!(ctx.id, "[FORWARD] {path} service shutdown");
+        Resp::fail_with_status(StatusCode::GONE, 419, "Goned")
+    } else {
+        log_info!(ctx.id, "[FORWARD] {path} service not found");
+        Resp::fail_with_status(StatusCode::NOT_FOUND, 404, "Not Found")
     }
 }
 
-fn get_service_endpoint(path: &str) -> Option<CompactString> {
-    let mut services = SERVICES.lock();
-    let mut pos = Some(path.len());
+fn get_service_endpoint(mut path: &str) -> Option<CompactString> {
+    let services = get_services();
 
-    while let Some(pos2) = pos {
-        let path = &path[0..pos2];
-
-        if let Some(svr_list) = services.get_mut(path) {
+    while !path.is_empty() {
+        if let Some(mut svr_list) = services.get_mut(path) {
             let now = LocalTime::now().timestamp();
             // 找到第一个未过期的接口服务
             while let Some(svr) = svr_list.pop_front() {
@@ -226,99 +233,52 @@ fn get_service_endpoint(path: &str) -> Option<CompactString> {
                     return Some(res);
                 }
             }
+
+            if svr_list.is_empty() {
+                services.remove(path);
+            }
         }
 
-        pos = path.rfind('/');
+        path = &path[..path.rfind('/').unwrap_or(0)];
     }
 
     None
 }
 
 #[inline(never)]
-fn gen_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
+fn create_uri(endpoint: &str, path_and_query: &str) -> HttpResult<Uri> {
     let mut buf = SmallString::<[u8; 512]>::new();
-    write!(buf, "http://{endpoint}{path_and_query}")?;
-    let s = buf.as_str();
-    s.parse()
-        .with_context(|| format!("create forward uri error: `{s}`"))
+    if write!(buf, "http://{endpoint}{path_and_query}").is_err() {
+        http_bail!("server memory overflow");
+    }
+
+    match buf.as_str().parse() {
+        Ok(uri) => Ok(uri),
+        Err(_) => http_bail!("service endpoint format error"),
+    }
 }
 
 /// 基于子路径的递归查找取消注册服务功能
 fn unregister_service_by_endpoint(endpoint: &str) {
-    SERVICES.lock().retain(|_, v| {
-        v.retain(|s| s.endpoint.as_str() != endpoint);
-        !v.is_empty()
+    get_services().retain(|_, slist| {
+        slist.retain(|s| s.endpoint.as_str() != endpoint);
+        !slist.is_empty()
     });
 }
 
-async fn log_request(mut ctx: HttpContext) -> HttpContext {
-    let req = &ctx.req;
-    let mut text = String::new();
+fn get_client() -> &'static Client<HttpConnector, Full<Bytes>> {
+    CLIENT.get_or_init(|| {
+        let ct: u64 = AppConf::get().conn_timeout.parse().unwrap_or(3);
+        let mut hc = HttpConnector::new();
+        hc.set_connect_timeout(Some(Duration::from_secs(ct)));
 
-    // 输出header
-    write!(text, "{}http request[{}] >>>{}\n",
-        ansicolor::G,
-        ctx.id,
-        ansicolor::Z,
-    ).unwrap();
-    write!(text, "{} {} {:?}\n",
-        req.method(),
-        req.uri().path_and_query().unwrap(),
-        req.version()
-    ).unwrap();
-
-    for (k, v) in req.headers() {
-        write!(text, "{}: {}\n", k.as_str(), v.to_str().unwrap()).unwrap();
-    }
-
-    text.push('\n');
-
-    // 输出body
-    let (parts, body) = ctx.req.into_parts();
-    let body = to_bytes(body).await.unwrap();
-
-    match String::from_utf8(body.to_vec()) {
-        Ok(s) => text.push_str(&s),
-        Err(_) => text.push_str("<binary>"),
-    }
-
-    log::trace!("{}", text);
-
-    let body = Body::from(body);
-    ctx.req = hyper::Request::from_parts(parts, body);
-    ctx
+        Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(60))
+            .pool_timer(TokioTimer::new())
+            .build(hc)
+    })
 }
 
-async fn log_response(req_id: u32, res: Response) -> Response {
-    let mut text = String::new();
-
-    // 输出header
-    write!(text, "{}http response[{}] >>>{}\n",
-        ansicolor::B,
-        req_id,
-        ansicolor::Z,
-    ).unwrap();
-    write!(text, "{:?} {}\n",
-        res.version(),
-        res.status().to_string(),
-    ).unwrap();
-
-    for (k, v) in res.headers() {
-        write!(text, "{}: {}\n", k.as_str(), v.to_str().unwrap()).unwrap();
-    }
-
-    text.push('\n');
-
-    // 输出body
-    let (parts, body) = res.into_parts();
-    let body = to_bytes(body).await.unwrap();
-
-    match String::from_utf8(body.to_vec()) {
-        Ok(s) => text.push_str(&s),
-        Err(_) => text.push_str("<binary>"),
-    }
-
-    log::trace!("{}", text);
-
-    Response::from_parts(parts, Body::from(body))
+fn get_services() -> &'static ServicesType {
+    SERVICES.get_or_init(ServicesType::new)
 }
