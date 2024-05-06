@@ -1,8 +1,6 @@
 use compact_str::CompactString;
 use cookie::Cookie;
-use httpserver::{
-    http_bail, log_error, HttpContext, HttpResponse, HttpResult, Next, ToHttpError
-};
+use httpserver::{log_trace, log_warn, HttpContext, HttpResponse, Next};
 use hyper::http::HeaderValue;
 use serde_json::Value;
 use std::{borrow::Cow, time::Duration};
@@ -40,62 +38,81 @@ impl Authentication {
     }
 
     /// 校验jwt token
-    fn verify_token(&self, token: &str) -> HttpResult<()> {
+    fn verify_token(&self, token: &str, req_id: u32) -> bool {
         // 获取token的签名值
         let sign = match jwt::get_sign(token) {
             Some(sign) => sign.to_owned(),
-            None => http_bail!("jwt token format error: can't find '.'"),
+            None => {
+                log_warn!(req_id, "jwt token format error: can't find sign of {}", token);
+                return false;
+            }
         };
 
         // 优先从缓存中读取签名，减少解密次数
         if let Some(claims) = self.token_cache.get(&sign) {
             return match jwt::check_exp(&claims) {
                 Ok(_) => {
+                    // 需要校验发行者
                     if !self.iss.is_empty() {
-                        match jwt::check_issuer(&claims, &self.iss) {
-                            Ok(_) => Ok(()),
-                            Err(_) => http_bail!("jwt token issuer error"),
+                        if let Err(e) = jwt::check_issuer(&claims, &self.iss) {
+                            log_warn!(req_id, "jwt check issuer fail: {:?}", e);
+                            return false;
                         }
-                    } else {
-                        Ok(())
                     }
+                    true
                 }
-                Err(_) => http_bail!("jwt token expired"),
+                Err(_) => {
+                    log_warn!(req_id, "jwt token expired");
+                    false
+                }
             }
         }
 
         // 缓存中没有，进行验证步骤，并将解析的claims缓存起来
-        let claims = jwt::decode(token, &self.key, &self.iss).to_http_error()?;
-        self.token_cache.insert(sign, Arc::new(claims));
-
-        Ok(())
+        match jwt::decode(token, &self.key, &self.iss) {
+            Ok(claims) => {
+                self.token_cache.insert(sign, Arc::new(claims));
+                true
+            }
+            Err(e) => {
+                log_warn!(req_id, "jwt token decode error: {e:?}");
+                false
+            }
+        }
     }
 
     /// 解析返回jwt token字符串
-    fn get_token(ctx: &HttpContext) -> HttpResult<Option<Cow<str>>> {
+    fn get_token(ctx: &HttpContext) -> Option<Cow<str>> {
         match ctx.req.headers().get(jwt::AUTHORIZATION) {
             Some(auth) => match auth.to_str() {
                 Ok(auth) => {
                     if auth.len() > jwt::BEARER.len() && auth.starts_with(jwt::BEARER) {
-                        return Ok(Some(Cow::Borrowed(&auth[jwt::BEARER.len()..])));
+                        Some(Cow::Borrowed(&auth[jwt::BEARER.len()..]))
                     } else {
-                        http_bail!("Authorization is not jwt token")
+                        log_trace!(ctx.id, "Authorization is not jwt token");
+                        None
                     }
                 }
-                Err(e) => http_bail!("Authorization value is invalid: {:?}", e),
+                Err(e) => {
+                    log_warn!(ctx.id, "Authorization value is invalid: {:?}", e);
+                    None
+                }
             },
             None => Self::get_access_token(ctx),
         }
     }
 
     /// 从url参数或cookie中解析access_token
-    fn get_access_token(ctx: &HttpContext) -> HttpResult<Option<Cow<str>>> {
+    fn get_access_token(ctx: &HttpContext) -> Option<Cow<str>> {
         // 优先从url中获取access_token参数
         if let Some(query) = ctx.req.uri().query() {
             let mut parse = form_urlencoded::parse(query.as_bytes());
-            let token = parse.find(|(k, _)| k.as_ref() == ACCESS_TOKEN).map(|(_, v)| v);
+            let token = parse
+                .find(|(k, _)| k.as_ref() == ACCESS_TOKEN)
+                .map(|(_, v)| v);
+
             if token.is_some() {
-                return Ok(token);
+                return token;
             }
         };
 
@@ -103,19 +120,26 @@ impl Authentication {
         if let Some(cookie_str) = ctx.req.headers().get(COOKIE_NAME) {
             let cookie_str = match cookie_str.to_str() {
                 Ok(s) => s,
-                Err(e) => http_bail!("cookie value is not utf8 string: {:?}", e)
+                Err(e) => {
+                    log_warn!(ctx.id, "cookie value is not utf8 string: {:?}", e);
+                    return None;
+                }
             };
+
             for cookie in Cookie::split_parse_encoded(cookie_str) {
                 match cookie {
-                    Ok(c) => if c.name() == ACCESS_TOKEN {
-                        return Ok(Some(Cow::Owned(c.value().to_owned())));
+                    Ok(item) => if item.name() == ACCESS_TOKEN {
+                        return Some(Cow::Owned(String::from(item.value())));
                     }
-                    Err(e) => http_bail!("cookie value [{cookie_str}] parse encode error: {:?}", e),
+                    Err(e) => {
+                        log_warn!(ctx.id, "cookie value [{cookie_str}] parse encode error: {e:?}");
+                        return None;
+                    }
                 }
             }
         }
 
-        Ok(None)
+        None
     }
 
 }
@@ -123,18 +147,15 @@ impl Authentication {
 #[async_trait::async_trait]
 impl httpserver::HttpMiddleware for Authentication {
     async fn handle<'a>(&'a self, mut ctx: HttpContext, next: Next<'a>,) -> HttpResponse {
+        let mut verified = "false";
         // 解析token并进行校验，校验成功返回uid
-        if let Some(token) = Self::get_token(&ctx)? {
-            let verified = match self.verify_token(&token) {
-                Ok(_) => "true",
-                Err(e) => {
-                    log_error!(ctx.id, "AUTH verify token error: {:?}", e);
-                    "false"
-                },
-            };
-            // 添加头部标志，指明token校验是否成功
-            ctx.req.headers_mut().append(TOKEN_VERIFIED, HeaderValue::from_static(verified));
+        if let Some(token) = Self::get_token(&ctx) {
+            if self.verify_token(&token, ctx.id) {
+                verified = "true";
+            }
         }
+        // 添加头部标志，指明token校验是否成功
+        ctx.req.headers_mut().append(TOKEN_VERIFIED, HeaderValue::from_static(verified));
         next.run(ctx).await
     }
 }

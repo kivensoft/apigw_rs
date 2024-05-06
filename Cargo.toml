@@ -32,11 +32,12 @@ serde_json = "1.0" # 最流行的json序列化反序列化库
 form_urlencoded = "1.2" # url参数编解码库
 urlencoding = "2.1" # url编解码库
 cookie = { version = "0.18", features = ["percent-encode"] } # http cookie库
-anyhow = "1.0" # 最流行的错误处理库
+# anyhow = "1.0" # 最流行的错误处理库
+anyhow_ext = "0.2" # anyhow扩展库
 log = "0.4" # 日志门面库，官方标准
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] } # 官方推荐的日期时间库
 async-trait = "0.1" # trait的异步函数声明库
-compact_str = { version = "0.7", features = ["serde", "bytes"] }
+compact_str = { version = "0.7", features = ["serde", "bytes"] } # 小字符串内嵌的字符串替代库
 parking_lot = "0.12" # 性能更好的替代标准库Mutex/RwLock的三方库
 triomphe = "0.1" # 比标准库的Arc更轻量的替代类
 # fnv = "1.0" # 在小数量时比hashmap更快的map

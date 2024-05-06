@@ -5,18 +5,20 @@ use crate::{
     AppConf, AppGlobal,
 };
 use compact_str::{format_compact, CompactString};
-use httpserver::{log_debug, log_error, log_info, HttpContext, HttpResponse, Resp, ToHttpError};
+use httpserver::{log_debug, log_error, log_info, HttpContext, HttpResponse, Resp};
 use localtime::LocalTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use triomphe::Arc;
 
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct PingRequest {
     reply: Option<CompactString>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RegRequest {
     endpoint: CompactString,
     path: Option<CompactString>,
@@ -26,35 +28,41 @@ struct RegRequest {
 /// 服务测试，测试服务是否存活
 pub async fn ping(ctx: HttpContext) -> HttpResponse {
     #[derive(Serialize)]
-    // #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase")]
     struct Res {
         reply: CompactString,
         now: LocalTime,
         server: CompactString,
+        client: CompactString,
     }
 
-    log_debug!(ctx.id, "ping from: {}", ctx.addr);
+    let client: CompactString = format_compact!("{}", ctx.addr);
+
+    log_debug!(ctx.id, "ping from: {}", client);
 
     let reply = get_reply_param(&ctx).await;
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
     Resp::ok(&Res {
         reply,
         now: LocalTime::now(),
         server: format_compact!("{}/{}", crate::APP_NAME, crate::APP_VER),
+        client,
     })
 }
 
 /// 生成token，生成jwt格式token
 pub async fn token(ctx: HttpContext) -> HttpResponse {
     #[derive(Deserialize)]
-    // #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase")]
     struct Req {
         ttl:    u32,        // token存活时间(分钟为单位)
         claims: Value,      // 附加要加入jwt的字段及内容
     }
 
     #[derive(Serialize)]
-    // #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase")]
     struct Res {
         token: String,
     }
@@ -67,8 +75,7 @@ pub async fn token(ctx: HttpContext) -> HttpResponse {
     }
 
     let exp = (param.ttl * 60) as u64;
-    let token = jwt::encode(param.claims, &ac.token_key, &ac.token_issuer, exp)
-        .to_http_error()?;
+    let token = jwt::encode(param.claims, &ac.token_key, &ac.token_issuer, exp)?;
 
     Resp::ok(&Res { token })
 }
@@ -95,34 +102,36 @@ pub async fn status(_ctx: HttpContext) -> HttpResponse {
 /// 注册服务查询
 pub async fn query(ctx: HttpContext) -> HttpResponse {
     #[derive(Deserialize, Default)]
+    #[serde(rename_all = "camelCase")]
     struct Req {
         path: Option<CompactString>,
         paths: Option<Vec<CompactString>>,
     }
 
     #[derive(Serialize)]
-    struct Item {
+    #[serde(rename_all = "camelCase")]
+    struct SvrInfoItem {
         path: CompactString,
         services: Vec<proxy::ServiceItem>,
     }
 
     #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
     struct Res {
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<CompactString>,
         #[serde(skip_serializing_if = "Option::is_none")]
         services: Option<Vec<proxy::ServiceItem>>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        list: Option<Vec<Item>>,
+        list: Option<Vec<SvrInfoItem>>,
     }
 
-    let url_path = CompactString::new(ctx.req.uri().path());
     let mut param = ctx.parse_json_opt::<Req>()?.unwrap_or(Req::default());
 
-    if param.path.is_none() && !url_path.ends_with("/query") {
-        if let Some(pos) = url_path.rfind('/') {
-            let val = urlencoding::decode(&url_path[pos + 1..]).to_http_error()?;
-            param.path = Some(CompactString::new(val));
+    // body中没有，尝试从路径中读取
+    if param.path.is_none() {
+        if let Some(s) = ctx.get_path_val(0) {
+            param.path = Some(CompactString::new(s));
         }
     }
 
@@ -130,8 +139,9 @@ pub async fn query(ctx: HttpContext) -> HttpResponse {
         return Resp::fail("param path and paths not find");
     }
 
+    // 优先使用path参数
     if let Some(path) = &param.path {
-        log_debug!(ctx.id, "查找: {path}");
+        log_debug!(ctx.id, "查找 {path} 对应的服务");
         let services = proxy::service_query(path);
         return Resp::ok(&Res {
             path: param.path.clone(),
@@ -140,11 +150,12 @@ pub async fn query(ctx: HttpContext) -> HttpResponse {
         });
     }
 
+    // 没有path参数，则使用paths参数
     if let Some(paths) = param.paths {
         let mut list = Vec::with_capacity(paths.len());
         for path in paths {
             if let Some(services) = proxy::service_query(&path) {
-                list.push(Item { path, services });
+                list.push(SvrInfoItem { path, services });
             }
         }
         return Resp::ok(&Res {
@@ -162,6 +173,7 @@ pub async fn reg(ctx: HttpContext) -> HttpResponse {
     type Req = RegRequest;
 
     #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
     struct Res {
         endpoint: CompactString,
     }
@@ -172,25 +184,27 @@ pub async fn reg(ctx: HttpContext) -> HttpResponse {
         return Resp::fail("param path and paths not find");
     }
 
+    // 优先使用path参数进行注册
     if let Some(path) = &param.path {
         if proxy::register_service(path, &param.endpoint) {
             log_info!(
                 ctx.id,
-                "service[{}: {}] registration successful",
+                "service[{} => {}] registration successful",
+                param.endpoint,
                 path,
-                param.endpoint
             );
         }
     }
 
+    // path参数为空时使用paths参数进行注册
     if let Some(paths) = &param.paths {
         for path in paths {
             if proxy::register_service(path, &param.endpoint) {
                 log_info!(
                     ctx.id,
-                    "service[{}: {}] registration successful",
+                    "service[{} => {}] registration successful",
+                    param.endpoint,
                     path,
-                    param.endpoint
                 );
             }
         }
@@ -229,27 +243,27 @@ pub async fn unreg(ctx: HttpContext) -> HttpResponse {
 /// 获取配置信息
 pub async fn cfg(ctx: HttpContext) -> HttpResponse {
     #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
     struct Req {
         group: Option<CompactString>,
         groups: Option<Vec<CompactString>>,
     }
 
     #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
     struct Res {
         #[serde(skip_serializing_if = "Option::is_none")]
         config: Option<dict::DictItems>,
     }
 
-    let url_path = CompactString::new(ctx.req.uri().path());
     let mut param = ctx.parse_json_opt::<Req>()?.unwrap_or(Req {
         group: None,
         groups: None,
     });
 
-    if param.group.is_none() && !url_path.ends_with("/cfg") {
-        if let Some(pos) = url_path.rfind('/') {
-            let val = urlencoding::decode(&url_path[pos + 1..]).to_http_error()?;
-            param.group = Some(CompactString::new(val));
+    if param.group.is_none() {
+        if let Some(group) = ctx.get_path_val(0) {
+            param.group = Some(CompactString::new(group));
         }
     }
 

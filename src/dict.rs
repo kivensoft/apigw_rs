@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::OnceLock};
 
-use anyhow::{Result, Context};
+use anyhow_ext::{Result, Context};
 use appconfig::Config;
 use compact_str::CompactString;
 use dashmap::DashMap;

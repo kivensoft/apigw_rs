@@ -1,9 +1,10 @@
+use anyhow_ext::{Context, Result};
 use compact_str::CompactString;
 use dashmap::DashMap;
 use http_body_util::{BodyExt, Full};
 use httpserver::{
-    http_bail, if_else, log_error, log_info, Bytes, HttpContext, HttpResponse, HttpResult, Resp,
-    Response,
+    if_else, log_error, log_info, Bytes, HttpContext, HttpResponse,
+    Resp, Response,
 };
 use hyper::{StatusCode, Uri};
 use hyper_util::{
@@ -246,16 +247,11 @@ fn get_service_endpoint(mut path: &str) -> Option<CompactString> {
 }
 
 #[inline(never)]
-fn create_uri(endpoint: &str, path_and_query: &str) -> HttpResult<Uri> {
+fn create_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
     let mut buf = SmallString::<[u8; 512]>::new();
-    if write!(buf, "http://{endpoint}{path_and_query}").is_err() {
-        http_bail!("server memory overflow");
-    }
+    write!(buf, "http://{endpoint}{path_and_query}")?;
 
-    match buf.as_str().parse() {
-        Ok(uri) => Ok(uri),
-        Err(_) => http_bail!("service endpoint format error"),
-    }
+    buf.as_str().parse().context("parse forward uri fail")
 }
 
 /// 基于子路径的递归查找取消注册服务功能

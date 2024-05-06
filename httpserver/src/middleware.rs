@@ -4,7 +4,7 @@ use hyper::{body::Bytes, header::HeaderValue};
 
 use crate::{
     log_debug, log_error, log_info, log_trace, if_else, HttpContext, HttpResponse,
-    Next, Response, ToHttpError, CONTENT_TYPE
+    Next, Response, CONTENT_TYPE
 };
 
 /// middleware interface
@@ -13,9 +13,9 @@ pub trait HttpMiddleware: Send + Sync + 'static {
     async fn handle<'a>(&'a self, ctx: HttpContext, next: Next<'a>) -> HttpResponse;
 }
 
-/// Log middleware
+/// Log middleware，访问日志中间件
 pub struct AccessLog;
-/// Cors middleware
+/// Cors middleware，跨域访问中间件
 pub struct CorsMiddleware;
 
 #[async_trait::async_trait]
@@ -98,13 +98,13 @@ impl HttpMiddleware for CorsMiddleware {
         let is_options = ctx.req.method() == hyper::Method::OPTIONS;
         let allow_host = HeaderValue::from_str("*").unwrap();
         if is_options {
-            hyper::Response::builder()
-                .header(ACCESS_CONTROL_ALLOW_HEADERS, allow_host.clone())
-                .header(ACCESS_CONTROL_ALLOW_METHODS, allow_host.clone())
-                .header(ACCESS_CONTROL_ALLOW_ORIGIN, allow_host.clone())
-                .header(ALLOW, HeaderValue::from_str("GET,HEAD,OPTIONS").unwrap())
-                .body(Full::<Bytes>::new(Bytes::new()))
-                .to_http_error()
+            Ok(
+                hyper::Response::builder()
+                    .header(ACCESS_CONTROL_ALLOW_HEADERS, allow_host.clone())
+                    .header(ACCESS_CONTROL_ALLOW_METHODS, allow_host.clone())
+                    .header(ACCESS_CONTROL_ALLOW_ORIGIN, allow_host.clone())
+                    .header(ALLOW, HeaderValue::from_str("GET,HEAD,OPTIONS").unwrap())
+                    .body(Full::<Bytes>::new(Bytes::new()))?)
         } else {
             let mut res = next.run(ctx).await?;
             let h = res.headers_mut();

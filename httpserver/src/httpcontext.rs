@@ -1,12 +1,13 @@
 use std::{borrow::Cow, collections::HashMap, net::{Ipv4Addr, SocketAddr}, str::FromStr};
 
+use anyhow::Result;
 use compact_str::CompactString;
 use fnv::FnvHashMap;
-use hyper::{body::{Buf, Bytes}, header::{AsHeaderName, HeaderValue}};
+use hyper::{body::Bytes, header::{AsHeaderName, HeaderValue}};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::{http_bail, log_error, HttpCtxAttrs, HttpError, HttpResult, Request, CONTENT_TYPE};
+use crate::{http_bail, log_error, HttpCtxAttrs, HttpError, Request, CONTENT_TYPE};
 
 
 /// api function param
@@ -69,10 +70,13 @@ impl HttpContext {
     ///     Resp::ok_with_empty()
     /// }
     /// ```
-    pub fn parse_json<T: DeserializeOwned>(&self) -> HttpResult<T> {
+    pub fn parse_json<T: DeserializeOwned>(&self) -> Result<T> {
         match self.parse_json_opt()? {
             Some(v) => Ok(v),
-            None => Err(HttpError::BodyNotJson),
+            #[cfg(not(feature = "english"))]
+            None => http_bail!("缺省请求参数"),
+            #[cfg(feature = "english")]
+            None => http_bail!("required body"),
         }
     }
 
@@ -101,31 +105,29 @@ impl HttpContext {
     ///     Resp::ok_with_empty()
     /// }
     /// ```
-    pub fn parse_json_opt<T: DeserializeOwned>(&self) -> HttpResult<Option<T>> {
+    pub fn parse_json_opt<T: DeserializeOwned>(&self) -> Result<Option<T>> {
         #[cfg(not(feature = "english"))]
         const MISSING_FIELD: &str = "missing field `";
 
-        let res = if self.body.has_remaining() {
+        let res = if !self.body.is_empty() {
             match serde_json::from_slice(&self.body) {
                 Ok(v) => Some(v),
+                #[cfg(not(feature = "english"))]
                 Err(e) => {
-                    #[cfg(not(feature = "english"))]
-                    {
-                        log_error!(self.id, "json反序列化请求体失败: {e:?}");
-                        let mut emsg = e.to_string();
-                        if emsg.starts_with(MISSING_FIELD) {
-                            let s = &emsg[MISSING_FIELD.len()..];
-                            if let Some(pos) = s.find('`') {
-                                emsg = format!("字段{}不能为空", &s[..pos]);
-                            }
+                    log_error!(self.id, "json反序列化请求参数失败: {e:?}");
+                    let mut emsg = e.to_string();
+                    if emsg.starts_with(MISSING_FIELD) {
+                        let s = &emsg[MISSING_FIELD.len()..];
+                        if let Some(pos) = s.find('`') {
+                            emsg = format!("字段{}不能为空", &s[..pos]);
                         }
-                        return Err(HttpError::Custom(emsg));
                     }
-                    #[cfg(feature = "english")]
-                    {
-                        log_error!(self.id, "deserialize body to json fail: {e:?}");
-                        return Err(HttpError::Custom(e.to_string()));
-                    }
+                    return HttpError::result_with_source(emsg, e);
+                }
+                #[cfg(feature = "english")]
+                Err(e) => {
+                    log_error!(self.id, "deserialize body to json fail: {e:?}");
+                    return HttpError::result_with_source(e.to_string(), e);
                 }
             }
         } else {
@@ -194,7 +196,7 @@ impl HttpContext {
     }
 
     /// Asynchronous parsing of the body content of HTTP requests from url query,
-    pub fn get_url_param<K: AsRef<str>, V: FromStr>(&self, key: K) -> HttpResult<Option<V>> {
+    pub fn get_url_param<K: AsRef<str>, V: FromStr>(&self, key: K) -> Result<Option<V>> {
         Self::get_param(self.req.uri().query().unwrap_or("").as_bytes(), key)
     }
 
@@ -207,7 +209,7 @@ impl HttpContext {
     }
 
     /// Asynchronous parsing of the body content of HTTP requests from x-www-form-urlencoded query,
-    pub fn get_formdata_param<K: AsRef<str>, V: FromStr>(&self, key: K) -> HttpResult<Option<V>> {
+    pub fn get_formdata_param<K: AsRef<str>, V: FromStr>(&self, key: K) -> Result<Option<V>> {
         Self::get_param(&self.body, key)
     }
 
@@ -289,7 +291,7 @@ impl HttpContext {
         result
     }
 
-    fn get_param<K: AsRef<str>, V: FromStr>(data: &[u8], key: K) -> HttpResult<Option<V>> {
+    fn get_param<K: AsRef<str>, V: FromStr>(data: &[u8], key: K) -> Result<Option<V>> {
         let kref = key.as_ref();
         for (k, v) in form_urlencoded::parse(data) {
             if &k == kref {

@@ -4,7 +4,7 @@ mod dict;
 mod proxy;
 mod syssrv;
 
-use std::{fmt::Write, time::SystemTime};
+use std::{fmt::Write, time::Duration};
 
 use compact_str::CompactString;
 use httpserver::HttpServer;
@@ -68,11 +68,6 @@ impl Default for AppConf {
     }
 }
 
-/// 获取当前时间基于UNIX_EPOCH的秒数
-fn unix_timestamp() -> u64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
-}
-
 macro_rules! arg_err {
     ($text:literal) => {
         concat!("arg ", $text, " format error")
@@ -97,7 +92,7 @@ fn init() -> bool {
 
     AppGlobal::init(AppGlobal {
         heart_break_live_time: ac.api_expire.parse().expect(arg_err!("api-expire")),
-        startup_time: unix_timestamp(),
+        startup_time: localtime::unix_timestamp(),
     });
 
     if !ac.listen.is_empty() && ac.listen.as_bytes()[0] == b':' {
@@ -166,16 +161,19 @@ fn main() {
 
     let max_token_cache_size = ac.mtcs.parse().expect(arg_err!("mtcs"));
     let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
+    let (cancel_sender, cancel_manager) = httpserver::new_cancel();
 
     let mut srv = HttpServer::new();
     // 设置请求上下文路径
-    srv.set_prefix(&ac.context_path);
+    srv.set_content_path(&ac.context_path);
     // 路由支持1级子路径匹配
     srv.set_fuzzy_find(httpserver::FuzzyFind::One);
     // 添加日志中间件
     srv.set_middleware(httpserver::AccessLog);
     // 缺省处理函数改为反向代理处理函数
     srv.set_default_handler(proxy::proxy_handler);
+    // 允许用户通过发送取消消息来优雅的终止服务
+    srv.set_cancel_manager(cancel_manager);
 
     if !ac.token_key.is_empty() {
         // 添加token校验中间件
@@ -192,7 +190,22 @@ fn main() {
 
     let async_fn = async move {
         // 运行http server主服务
-        srv.run(addr).await.expect("http server run error");
+        let listener = srv.listen(addr).await.expect("http server listen error");
+
+        tokio::spawn(async move {
+            srv.serve(listener).await.expect("http server run error");
+        });
+
+        // 监听ctrl+c事件
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                println!("{APP_NAME} shutdowning... {}", cancel_sender.count());
+                cancel_sender.cancel_and_wait(Duration::from_millis(100)).await.unwrap();
+            }
+            Err(e) => {
+                eprintln!("Unable to listen for shutdown signal: {e:?}");
+            }
+        }
     };
 
     let threads = ac.threads.parse::<usize>().expect(arg_err!("threads"));

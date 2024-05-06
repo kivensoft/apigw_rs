@@ -1,82 +1,59 @@
 //! http server
+mod cancel;
 mod httpcontext;
+mod httperror;
 mod macros;
 mod middleware;
 mod resp;
 
+use anyhow::{Error, Result};
 use compact_str::CompactString;
 use fnv::FnvHashMap;
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Incoming, server::conn::http1, service};
 use hyper_util::rt::TokioIo;
 use serde_json::Value;
-use std::error::Error as StdError;
 use std::{
     collections::HashMap,
     convert::Infallible,
-    fmt::Debug,
     future::Future,
     net::SocketAddr,
-    result::Result,
     sync::{atomic::AtomicU32, Arc},
 };
-use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 
+pub use cancel::{CancelManager, CancelSender, new_cancel};
 pub use compact_str;
 pub use hyper::body::Bytes;
 pub use middleware::{AccessLog, CorsMiddleware, HttpMiddleware};
 pub use resp::{ApiResult, Resp};
 pub use httpcontext::HttpContext;
+pub use httperror::HttpError;
 
 /// http header "Content-Type"
 pub const CONTENT_TYPE: &str = "Content-Type";
 /// http header "applicatoin/json; charset=UTF-8"
 pub const APPLICATION_JSON: &'static str = "applicatoin/json; charset=UTF-8";
 
-/// Simplified declaration
-pub type HttpResult<T> = Result<T, HttpError>;
+// Simplified declaration
 pub type Request = hyper::Request<Full<Bytes>>;
-// pub type Request = hyper::Request<http_body_util::Full<Bytes>>;
 pub type Response = hyper::Response<Full<Bytes>>;
-pub type HttpResponse = HttpResult<Response>;
+pub type HttpResponse = Result<Response>;
 pub type BoxHttpHandler = Box<dyn HttpHandler>;
 
 type HttpCtxAttrs = Option<HashMap<CompactString, Value>>;
 type Router = FnvHashMap<CompactString, BoxHttpHandler>;
 
-#[derive(Error, Debug)]
-pub enum HttpError {
-    #[cfg(not(feature = "english"))]
-    #[error("请求参数格式错误")]
-    BodyNotJson,
-    #[cfg(feature = "english")]
-    #[error("request param format error")]
-    BodyNotJson,
-    #[error(transparent)]
-    IoError(#[from] std::io::Error),
-    #[error(transparent)]
-    HyperError(#[from] hyper::Error),
-    #[error("{0}")]
-    Custom(String),
-    #[error(transparent)]
-    Unknown(#[from] Box<dyn StdError + Send + 'static>),
-}
-
-/// use for HttpServer.run_with_callback
+// use for HttpServer.run_with_callback
 #[async_trait::async_trait]
 pub trait RunCallback {
-    async fn handle(self) -> HttpResult<()>;
+    async fn handle(self) -> Result<()>;
 }
 
 /// api function interface
 #[async_trait::async_trait]
 pub trait HttpHandler: Send + Sync + 'static {
     async fn handle(&self, ctx: HttpContext) -> HttpResponse;
-}
-
-pub trait ToHttpError<T, E> {
-    fn to_http_error(self) -> HttpResult<T>;
 }
 
 /// http request process object
@@ -97,38 +74,24 @@ pub enum FuzzyFind {
 
 /// http server
 pub struct HttpServer {
-    prefix: CompactString,
-    router: Router,
-    middlewares: Vec<Box<dyn HttpMiddleware>>,
-    default_handler: BoxHttpHandler,
-    error_handler: fn(u32, HttpError) -> Response,
-    fuzzy_find: FuzzyFind,
-}
-
-struct HttpServerData {
-    id: AtomicU32,
-    server: HttpServer,
-}
-
-impl<T, E: StdError + Send + 'static> ToHttpError<T, E> for Result<T, E> {
-    fn to_http_error(self) -> HttpResult<T> {
-        self.map_err(|e| HttpError::Unknown(Box::new(e)))
-    }
-}
-
-impl From<anyhow::Error> for HttpError {
-    fn from(value: anyhow::Error) -> Self {
-        HttpError::Custom(value.to_string())
-    }
+    id:                 AtomicU32,                      // 自增的请求id
+    count:              AtomicU32,                      // 当前连接总数
+    content_path:       CompactString,                  // 上下文路径
+    router:             Router,                         // 路由表
+    middlewares:        Vec<Box<dyn HttpMiddleware>>,   // 中间件
+    default_handler:    BoxHttpHandler,                 // 缺省处理函数
+    error_handler:      fn(u32, Error) -> Response,     // 错误处理函数
+    fuzzy_find:         FuzzyFind,                      // 路径匹配模式
+    cancel_manager:     Option<CancelManager>,          // 进程退出标志
 }
 
 #[async_trait::async_trait]
 impl<F: Send + Sync + 'static, Fut> RunCallback for F
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = HttpResult<()>> + Send + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
 {
-    async fn handle(self) -> HttpResult<()> {
+    async fn handle(self) -> Result<()> {
         self().await
     }
 }
@@ -160,22 +123,25 @@ impl HttpServer {
     /// Create a new HttpServer
     pub fn new() -> Self {
         HttpServer {
-            prefix: CompactString::with_capacity(0),
-            router: FnvHashMap::default(),
-            middlewares: Vec::<Box<dyn HttpMiddleware>>::new(),
-            default_handler: Box::new(Self::handle_not_found),
-            error_handler: Self::handle_error,
-            fuzzy_find: FuzzyFind::None,
+            id:                 AtomicU32::new(1),
+            count:              AtomicU32::new(0),
+            content_path:       CompactString::with_capacity(0),
+            router:             FnvHashMap::default(),
+            middlewares:        Vec::<Box<dyn HttpMiddleware>>::new(),
+            default_handler:    Box::new(Self::handle_not_found),
+            error_handler:      Self::handle_error,
+            fuzzy_find:         FuzzyFind::None,
+            cancel_manager:             None,
         }
     }
 
-    /// set api prefix path
+    /// set api content path
     ///
     /// Arguments:
     ///
     /// * `prefix`: api path prefix
     ///
-    pub fn set_prefix(&mut self, prefix: &str) {
+    pub fn set_content_path(&mut self, prefix: &str) {
         if prefix.is_empty() {
             return;
         }
@@ -190,7 +156,7 @@ impl HttpServer {
             p.push('/');
         }
 
-        self.prefix = p;
+        self.content_path = p;
     }
 
     /// setting fuzzy find mode
@@ -222,7 +188,7 @@ impl HttpServer {
     /// Arguments
     ///
     /// * `handler`: Exception event handling function
-    pub fn set_error_handler(&mut self, handler: fn(id: u32, err: HttpError) -> Response) {
+    pub fn set_error_handler(&mut self, handler: fn(id: u32, err: Error) -> Response) {
         self.error_handler = handler;
     }
 
@@ -257,13 +223,18 @@ impl HttpServer {
         self.middlewares.push(Box::new(middleware));
     }
 
+    /// set process exit cancel token
+    pub fn set_cancel_manager(&mut self, cancel: CancelManager) {
+        self.cancel_manager = Some(cancel);
+    }
+
     /// run http service and enter message loop mode
     ///
     /// Arguments:
     ///
     /// * `addr`: listen addr
-    pub async fn run(self, addr: std::net::SocketAddr) -> HttpResult<()> {
-        self.run_with_callbacck(addr, || async { Ok(()) }).await
+    pub async fn run(self, addr: std::net::SocketAddr) -> Result<()> {
+        self.run_with(addr, || async { Ok(()) }).await
     }
 
     /// run http service and enter message loop mode
@@ -272,42 +243,77 @@ impl HttpServer {
     ///
     /// * `addr`: listen addr
     /// * `f`: Fn() -> anyhow::Result<()>
-    pub async fn run_with_callbacck<F: RunCallback>(
+    pub async fn run_with<F: RunCallback>(
         self,
         addr: std::net::SocketAddr,
         f: F,
-    ) -> HttpResult<()> {
+    ) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
         f.handle().await?;
         self.log_api_info(addr);
 
-        let srv_data = Arc::new(HttpServerData {
-            id: AtomicU32::new(1),
-            server: self,
-        });
+        let srv = Arc::new(self);
 
         loop {
-            let (stream, addr) = listener.accept().await?;
-            let io = TokioIo::new(stream);
-            tokio::spawn(Self::on_accept(srv_data.clone(), addr, io));
+            let (tcp, addr) = listener.accept().await?;
+            let io = TokioIo::new(tcp);
+            tokio::spawn(Self::on_accept(srv.clone(), addr, io));
         }
     }
 
-    async fn on_accept(srv: Arc<HttpServerData>, addr: SocketAddr, io: TokioIo<TcpStream>) {
+    pub async fn listen(&self, addr: std::net::SocketAddr) -> Result<TcpListener> {
+        let listener = TcpListener::bind(addr).await?;
+        self.log_api_info(addr);
+        Ok(listener)
+    }
+
+    pub async fn serve(self, listener: TcpListener) -> Result<()> {
+        let srv = Arc::new(self);
+
+        if let Some(cancel) = &srv.cancel_manager {
+            let mut cancel = cancel.new_task_cancel();
+            loop {
+                tokio::select! {
+                    res = listener.accept() => {
+                        let (tcp, addr) = res?;
+                        let io = TokioIo::new(tcp);
+                        tokio::spawn(Self::on_accept(srv.clone(), addr, io));
+                    }
+                    _ = cancel.cancelled() => {
+                        cancel.finish();
+                        #[cfg(not(feature = "english"))]
+                        log::trace!("结束监听任务, 等待取消任务数: {}", cancel.count());
+                        #[cfg(feature = "english")]
+                        log::trace!("end listening task, wait for the number of cancelled tasks: {}", cancel.count());
+                        break Ok(());
+                    }
+                }
+            }
+        } else {
+            loop {
+                let (tcp, addr) = listener.accept().await?;
+                let io = TokioIo::new(tcp);
+                tokio::spawn(Self::on_accept(srv.clone(), addr, io));
+            }
+        }
+    }
+
+    async fn on_accept(srv: Arc<HttpServer>, addr: SocketAddr, io: TokioIo<TcpStream>) {
+        srv.count.fetch_add(1, std::sync::atomic::Ordering::Release);
         let id = Self::step_id(&srv.id);
 
         let srv_fn = |req: hyper::Request<Incoming>| {
             let srv = srv.clone();
             async move {
                 let path = req.uri().path();
-                let (endpoint, path_len) = srv.server.find_http_handler(path);
+                let (endpoint, path_len) = srv.find_http_handler(path);
                 let endpoint = match endpoint {
                     Some(v) => v,
-                    None => srv.server.default_handler.as_ref(),
+                    None => srv.default_handler.as_ref(),
                 };
                 let next = Next {
                     endpoint,
-                    next_middleware: &srv.server.middlewares,
+                    next_middleware: &srv.middlewares,
                 };
 
                 let (parts, body) = req.into_parts();
@@ -315,10 +321,10 @@ impl HttpServer {
                     Ok(v) => v.to_bytes(),
                     Err(e) => {
                         #[cfg(not(feature = "english"))]
-                        log_error!(id, "读取请求体失败");
+                        let e = Error::new(e).context("读取请求体失败");
                         #[cfg(feature = "english")]
-                        log_error!(id, "read from request body fail");
-                        let resp = (srv.server.error_handler)(id, HttpError::Unknown(Box::new(e)));
+                        let e = Error::new(e).context("read from request body fail");
+                        let resp = (srv.error_handler)(id, e);
                         return Ok::<_, Infallible>(resp);
                     }
                 };
@@ -336,22 +342,58 @@ impl HttpServer {
 
                 let resp = match next.run(ctx).await {
                     Ok(resp) => resp,
-                    Err(e) => (srv.server.error_handler)(id, e),
+                    Err(e) => (srv.error_handler)(id, e),
                 };
 
                 Ok::<_, Infallible>(resp)
             }
         };
 
-        if let Err(err) = http1::Builder::new()
-            .serve_connection(io, service::service_fn(srv_fn))
-            .await
-        {
-            #[cfg(not(feature = "english"))]
-            log_error!(id, "请求处理失败: {err:?}");
-            #[cfg(feature = "english")]
-            log_error!(id, "http process error: {err:?}");
+        let conn = http1::Builder::new()
+            .serve_connection(io, service::service_fn(srv_fn));
+        tokio::pin!(conn);
+
+        if let Some(cancel) = &srv.cancel_manager {
+            let mut cancel = cancel.new_task_cancel();
+            loop {
+                tokio::select! {
+                    res = conn.as_mut() => {
+                        if let Err(e) = res {
+                            #[cfg(not(feature = "english"))]
+                            log_error!(id, "请求处理失败: {e:?}");
+                            #[cfg(feature = "english")]
+                            log_error!(id, "request processing failed: {e:?}");
+                        }
+                        cancel.finish();
+                        #[cfg(not(feature = "english"))]
+                        log_trace!(id, "结束连接任务, 剩余待取消任务: {}", cancel.count());
+                        #[cfg(feature = "english")]
+                        log_trace!(id, "end connection task, remaining tasks to be cancelled: {}", cancel.count());
+                        break;
+                    }
+                    _ = cancel.cancelled() => {
+                        #[cfg(not(feature = "english"))]
+                        log_trace!(id, "进程关闭通知，正在结束连接...");
+                        #[cfg(feature = "english")]
+                        log_trace!(id, "Process shutdown notification, ending connection...");
+                        conn.as_mut().graceful_shutdown();
+                    }
+                }
+            }
+        } else {
+            if let Err(e) = conn.await {
+                #[cfg(not(feature = "english"))]
+                log_error!(id, "请求处理失败: {e:?}");
+                #[cfg(feature = "english")]
+                log_error!(id, "request processing failed: {e:?}");
+            }
         }
+
+        let count = srv.count.fetch_sub(1, std::sync::atomic::Ordering::Acquire);
+        #[cfg(not(feature = "english"))]
+        log::trace!("关闭连接, 剩余连接数: {}", count - 1);
+        #[cfg(feature = "english")]
+        log::trace!("close connection, remaining connections: {}", count - 1);
     }
 
     fn step_id(id: &AtomicU32) -> u32 {
@@ -363,8 +405,9 @@ impl HttpServer {
         }
     }
 
+    /// 路由查找，返回路由处理函数及路径匹配的长度
     fn find_http_handler<'a>(&'a self, path: &str) -> (Option<&'a dyn HttpHandler>, u32) {
-        let prefix = self.prefix.as_str();
+        let prefix = self.content_path.as_str();
 
         let pl = if !prefix.is_empty() {
             // 前缀不匹配
@@ -410,24 +453,32 @@ impl HttpServer {
         (None, 0)
     }
 
-    fn handle_error(id: u32, err: HttpError) -> Response {
-        #[cfg(not(feature = "english"))]
-        let msg = if let HttpError::Unknown(e) = err {
-            log_error!(id, "内部错误, {e:?}");
-            format!("内部错误: {}", id)
-        } else {
-            err.to_string()
+    fn handle_error(id: u32, err: Error) -> Response {
+        let (code, msg) = match err.downcast::<HttpError>() {
+            Ok(e) => {
+                if e.source.is_some() {
+                    log_error!(id, "{e:?}");
+                }
+                (e.code, e.message)
+            },
+            #[cfg(not(feature = "english"))]
+            Err(e) => {
+                log_error!(id, "内部错误, {e:?}");
+                (500, format!("内部错误: {}", id))
+            }
+            #[cfg(feature = "english")]
+            Err(e) => {
+                log_error!(id, "internal server error, {e:?}");
+                (500, format!("internal server error: {}", id))
+            }
         };
-        #[cfg(feature = "english")]
-        let msg = if let HttpError::Unknown(e) = err {
-            log_error!(id, "internal server error, {e:?}");
-            format!("internal server error: {}", id)
-        } else {
-            err.to_string()
-        };
-        match Resp::fail(&msg) {
+
+        match Resp::fail_with_code(code, &msg) {
             Ok(val) => val,
             Err(e) => {
+                #[cfg(not(feature = "english"))]
+                log_error!(id, "错误处理函数异常: {e:?}");
+                #[cfg(feature = "english")]
                 log_error!(id, "handle_error except: {e:?}");
                 let body = Full::from("internal server error");
                 let mut res = hyper::Response::new(body);
@@ -448,17 +499,24 @@ impl HttpServer {
     fn log_api_info(&self, addr: SocketAddr) {
         if log::log_enabled!(log::Level::Trace) {
             let mut buf = String::with_capacity(1024);
-            if !self.prefix.is_empty() {
+            if self.router.is_empty() {
                 #[cfg(not(feature = "english"))]
-                buf.push_str("已注册接口: prefix = ");
+                buf.push_str("已注册接口: <无>");
                 #[cfg(feature = "english")]
-                buf.push_str("Registered interface: prefix = ");
-                buf.push_str(&self.prefix[..self.prefix.len() - 1]);
+                buf.push_str("Registered interface: <Empty>");
             } else {
-                #[cfg(not(feature = "english"))]
-                buf.push_str("已注册接口:");
-                #[cfg(feature = "english")]
-                buf.push_str("Registered interface:");
+                if !self.content_path.is_empty() {
+                    #[cfg(not(feature = "english"))]
+                    buf.push_str("已注册接口: prefix = ");
+                    #[cfg(feature = "english")]
+                    buf.push_str("Registered interface: prefix = ");
+                    buf.push_str(&self.content_path[..self.content_path.len() - 1]);
+                } else {
+                    #[cfg(not(feature = "english"))]
+                    buf.push_str("已注册接口:");
+                    #[cfg(feature = "english")]
+                    buf.push_str("Registered interface:");
+                }
             }
             let buf = self.router.iter().fold(buf, |mut buf, v| {
                 buf.push('\n');

@@ -1,30 +1,30 @@
 //! macros
 
-/// 类似anyhow::bail宏
+/// 类似anyhow::bail宏, 返回anyhow::Result类型，使用anyhow::Error作为错误类型，包装HttpError错误
 #[macro_export]
 macro_rules! http_bail {
-    ($msg:literal $(,)?) => {
-        return Err($crate::HttpError::Custom(String::from($msg)))
+    ($msg:literal) => {
+        return Err($crate::HttpError::create(String::from($msg)))
     };
-    ($err:expr $(,)?) => {
-        return Err($crate::HttpError::Custom($err))
+    ($err:expr) => {
+        return Err($crate::HttpError::create($err))
     };
-    ($fmt:expr, $($arg:tt)*) => {
-        return Err($crate::HttpError::Custom(format!($fmt, $($arg)*)))
+    ($fmt:literal, $($arg:tt)*) => {
+        return Err($crate::HttpError::create(format!($fmt, $($arg)*)))
     };
 }
 
-/// 类似anyhow::anyhow宏
+/// 类似anyhow::anyhow宏, 返回anyhow::Error类型，包装HttpError错误
 #[macro_export]
-macro_rules! http_err {
-    ($msg:literal $(,)?) => {
-        $crate::HttpError::Custom(String::from($msg))
+macro_rules! http_error {
+    ($msg:literal) => {
+        $crate::HttpError::create(String::from($msg))
     };
-    ($err:expr $(,)?) => {
-        $crate::HttpError::Custom($err)
+    ($err:expr) => {
+        $crate::HttpError::create($err)
     };
-    ($fmt:expr, $($arg:tt)*) => {
-        $crate::HttpError::Custom(format!($fmt, $($arg)*))
+    ($fmt:literal, $($arg:tt)*) => {
+        $crate::HttpError::create(format!($fmt, $($arg)*))
     };
 }
 
@@ -73,9 +73,9 @@ macro_rules! check_required {
         $(
             if $val.$attr.is_none() {
                 #[cfg(not(feature = "english"))]
-                return Err($crate::HttpError::Custom(format!("{}{}", stringify!($attr), " 不能为空")))
+                $crate::http_bail!(format!("{}{}", stringify!($attr), " 不能为空"))
                 #[cfg(feature = "english")]
-                return Err($crate::HttpError::Custom(format!("{}{}", stringify!($attr), " cannot be null")))
+                $crate::http_bail!(format!("{}{}", stringify!($attr), " cannot be null"))
             }
         )*
     };
@@ -100,15 +100,15 @@ macro_rules! check_required {
 #[macro_export]
 macro_rules! assign_required {
     ($val:expr, $($attr:tt),+) => {
-        let ($($attr,)*) = (
+        (
             $(
                 match &$val.$attr {
                     Some(v) => v,
                     None => {
                         #[cfg(not(feature = "english"))]
-                        return Err($crate::HttpError::Custom(format!("{}{}", stringify!($attr), " 不能为空")))
+                        $crate::http_bail!(format!("{}{}", stringify!($attr), " 不能为空"))
                         #[cfg(feature = "english")]
-                        return Err($crate::HttpError::Custom(format!("{}{}", stringify!($attr), " cannot be null")))
+                        $crate::http_bail!(format!("{}{}", stringify!($attr), " cannot be null"))
                     }
                 },
             )*
@@ -130,37 +130,12 @@ macro_rules! assign_required {
 macro_rules! fail_if {
     ($b:expr, $msg:literal) => {
         if $b {
-            return Err($crate::HttpError::Custom(String::from($msg)))
+            $crate::http_bail!(String::from($msg))
         }
     };
     ($b:expr, $($t:tt)+) => {
         if $b {
-            return Err($crate::HttpError::Custom(format!($($t)*)))
-        }
-    };
-}
-
-/// Error message response returned when ApiResult.is_fail() == true
-///
-/// ## Example
-/// ```rust
-/// use httpserver::fail_if_api;
-///
-/// let f = || {
-///     let ar = ApiResult::fail("open database error");
-///     fail_if_api!(ar);
-///     Resp::ok_with_empty()
-/// }
-/// assert_eq!(f(), Resp::fail_with_api_result(ApiResult::fail("open database error")));
-/// ```
-#[macro_export]
-macro_rules! fail_if_api {
-    ($ar:expr) => {
-        if $ar.is_ok() {
-            $ar.data
-        } else {
-            log::info!("ApiResult error: code = {}, msg = {}", $ar.code, $ar.msg);
-            return Err($crate::HttpError::Custom(format!($ar.msg)));
+            $crate::http_bail!(format!($($t)*))
         }
     };
 }

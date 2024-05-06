@@ -1,10 +1,13 @@
 //! resp
 
+use std::fmt::Display;
+
+use anyhow::Context;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::{HttpError, HttpResponse, APPLICATION_JSON, CONTENT_TYPE};
+use crate::{HttpResponse, APPLICATION_JSON, CONTENT_TYPE};
 
 /// Universal API interface returns data format
 #[derive(Serialize, Deserialize, Debug)]
@@ -75,6 +78,46 @@ impl<T> ApiResult<T> {
     pub fn is_fail(&self) -> bool {
         self.code != 200
     }
+
+    pub fn unwrap(self) -> Option<T> {
+        if self.is_ok() {
+            self.data
+        } else {
+            match self.message {
+                Some(msg) => panic!("ApiResult failed: code = {}, message = {}", self.code, msg),
+                None => panic!("ApiResult failed: code = {}", self.code),
+            }
+
+        }
+    }
+
+    pub fn context(self, context: String) -> anyhow::Result<Option<T>> {
+        if self.is_ok() {
+            Ok(self.data)
+        } else {
+            let err = match self.message {
+                Some(msg) => format!("ApiResult failed: code = {}, message = {}", self.code, msg),
+                None => format!("ApiResult failed: code = {}", self.code),
+            };
+            Err(anyhow::Error::msg(err).context(context))
+        }
+    }
+
+    pub fn with_context<C, F>(self, f: F) -> anyhow::Result<Option<T>>
+    where
+        C: Display + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        if self.is_ok() {
+            Ok(self.data)
+        } else {
+            let err = match self.message {
+                Some(msg) => format!("ApiResult failed: code = {}, message = {}", self.code, msg),
+                None => format!("ApiResult failed: code = {}", self.code),
+            };
+            Err(anyhow::Error::msg(err).context(f()))
+        }
+    }
 }
 
 impl Resp {
@@ -101,11 +144,12 @@ impl Resp {
     /// ))?;
     /// ````
     pub fn resp<T: Into<Bytes>>(status: hyper::StatusCode, body: T) -> HttpResponse {
-        hyper::Response::builder()
-            .status(status)
-            .header(CONTENT_TYPE, APPLICATION_JSON)
-            .body(Full::new(body.into()))
-            .map_err(|e| HttpError::Custom(e.to_string()))
+        Ok(
+            hyper::Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, APPLICATION_JSON)
+                .body(Full::new(body.into()))?
+        )
     }
 
     /// Create a reply with ApiResult
@@ -121,13 +165,18 @@ impl Resp {
             hyper::StatusCode::INTERNAL_SERVER_ERROR
         };
 
-        let body = serde_json::to_vec(&ar.data).map_err(|e| HttpError::Custom(e.to_string()))?;
+        #[cfg(not(feature = "english"))]
+        let body = serde_json::to_vec(&ar.data).context("json序列化失败")?;
+        #[cfg(feature = "english")]
+        let body = serde_json::to_vec(&ar.data).context("json serialization failed")?;
 
-        hyper::Response::builder()
-            .status(status)
-            .header(CONTENT_TYPE, APPLICATION_JSON)
-            .body(Full::from(body))
-            .map_err(|e| HttpError::Custom(e.to_string()))
+        Ok(
+            hyper::Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, APPLICATION_JSON)
+                .body(Full::from(body))?
+        )
+
     }
 
     /// Create a reply message with 200
@@ -152,10 +201,11 @@ impl Resp {
     /// ))?;
     /// ````
     pub fn resp_ok<T: Into<Bytes>>(body: T) -> HttpResponse {
-        hyper::Response::builder()
-            .header(CONTENT_TYPE, APPLICATION_JSON)
-            .body(Full::from(body.into()))
-            .map_err(|e| HttpError::Custom(e.to_string()))
+        Ok(
+            hyper::Response::builder()
+                .header(CONTENT_TYPE, APPLICATION_JSON)
+                .body(Full::from(body.into()))?
+        )
     }
 
     /// Create a reply message with 200, response body is empty
@@ -188,11 +238,9 @@ impl Resp {
         let mut w = Vec::with_capacity(512);
         w.extend_from_slice(br#"{"code":200,"data":"#);
         #[cfg(not(feature = "english"))]
-        serde_json::to_writer(&mut w, data)
-            .map_err(|_| HttpError::Custom(String::from("json序列化错误")))?;
+        serde_json::to_writer(&mut w, data).context("json序列化失败")?;
         #[cfg(feature = "english")]
-        serde_json::to_writer(&mut w, data)
-            .map_err(|_| HttpError::Custom(String::from("json serialization error")))?;
+        serde_json::to_writer(&mut w, data).context("json serialization failed")?;
         w.push(b'}');
         Self::resp_ok(w)
     }
@@ -271,7 +319,10 @@ impl Resp {
         w.extend_from_slice(br#"{"code":"#);
         w.extend_from_slice(code.as_bytes());
         w.extend_from_slice(br#","message":"#);
-        serde_json::to_writer(&mut w, message).map_err(|e| HttpError::Custom(e.to_string()))?;
+        #[cfg(not(feature = "english"))]
+        serde_json::to_writer(&mut w, message).context("json序列化失败")?;
+        #[cfg(feature = "english")]
+        serde_json::to_writer(&mut w, message).context("json serialization failed")?;
         w.push(b'}');
         Self::resp(status, w)
     }
