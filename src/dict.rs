@@ -1,60 +1,64 @@
-use std::{collections::HashMap, sync::OnceLock};
-
 use anyhow_ext::{Result, Context};
 use appconfig::Config;
+use arc_swap::ArcSwapOption;
 use compact_str::CompactString;
-use dashmap::DashMap;
+use qp_trie::{wrapper::BString, Trie};
 use serde::Serialize;
 use triomphe::Arc;
 
-static DICT_MAP: OnceLock<DictMap> = OnceLock::new();
+pub type DictItems = Vec<DictItem>;
+type DictValue = Arc<CompactString>;
+type DictData = Trie<BString, DictValue>;
 
-pub type DictItems = Arc<Vec<DictItem>>;
-type DictMap = DashMap<CompactString, DictItems>;
+static DICT_MAP: ArcSwapOption<DictData> = ArcSwapOption::const_empty();
 
 #[derive(Serialize, Clone)]
 pub struct DictItem {
     pub key: CompactString,
-    pub value: CompactString,
+    pub value: DictValue,
 }
 
-pub fn query(group: &str) -> Option<DictItems> {
-    get_dict_map().get(group).map(|v| v.value().clone())
+pub fn query(key_prefix: &str) -> Option<DictItems> {
+    let dict_data = DICT_MAP.load();
+    let dict_data = match dict_data.as_ref() {
+        Some(v) => v,
+        None => {
+            log::warn!("config data is empty");
+            return None;
+        }
+    };
+
+    let items: Vec<_> = dict_data
+        .iter_prefix_str(key_prefix)
+        .map(|(k, v)| DictItem::new(k.as_str(), v.clone()))
+        .collect();
+
+    if !items.is_empty() {
+        Some(items)
+    } else {
+        None
+    }
 }
 
 pub fn load(filename: &str) -> Result<()> {
     // 将文件中的键值对，转换到map
-    let cfg = Config::with_file(filename).context("load cfgdata error")?;
-    let mut tmp_map = HashMap::<CompactString, Vec<DictItem>>::new();
+    let cfg = Config::with_file(filename).with_context(|| format!("load {} fail", filename))?;
+    let mut dict_data = DictData::new();
 
     for (key, value) in cfg.iter() {
-        if let Some((k1, k2)) = key.split_once('.') {
-            let dict_item = DictItem {
-                key: CompactString::new(k2),
-                value: CompactString::new(value),
-            };
-
-            match tmp_map.get_mut(k1) {
-                Some(v) => { v.push(dict_item); }
-                None => { tmp_map.insert(CompactString::new(k1), vec![dict_item]); }
-            }
-
-            log::trace!("[dict.load] add config [group = {}, key = {}, value = {}]", k1, k2, value);
-        }
+        dict_data.insert_str(key, Arc::new(CompactString::new(value)));
     }
 
-    let new_map = DictMap::with_capacity(tmp_map.len());
-    for (k, v) in tmp_map.into_iter() {
-        new_map.insert(k, Arc::new(v));
-    }
-
-    if DICT_MAP.set(new_map).is_err() {
-        log::error!("[dict.load] set dict map failed");
-    }
+    DICT_MAP.store(Some(std::sync::Arc::new(dict_data)));
 
     Ok(())
 }
 
-fn get_dict_map() -> &'static DictMap {
-    DICT_MAP.get_or_init(DictMap::new)
+impl DictItem {
+    pub fn new(key: &str, value: Arc<CompactString>) -> Self {
+        DictItem {
+            key: CompactString::new(key),
+            value,
+        }
+    }
 }

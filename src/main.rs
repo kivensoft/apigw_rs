@@ -2,13 +2,14 @@ mod auth;
 mod apis;
 mod dict;
 mod proxy;
+mod redis;
 mod syssrv;
 
-use std::{fmt::Write, time::Duration};
+use std::fmt::Write;
 
 use compact_str::CompactString;
 use httpserver::HttpServer;
-use smallstr::SmallString;
+use small_str::SmallStr;
 
 const BANNER: &str = r#"
     ___          _    ______      __  Kivensoft ?
@@ -19,7 +20,7 @@ const BANNER: &str = r#"
       /_/                                            /____/
 "#;
 
-const APP_NAME: &str = include_str!(concat!(env!("OUT_DIR"), "/.app_name"));
+pub const APP_NAME: &str = include_str!(concat!(env!("OUT_DIR"), "/.app_name"));
 /// app版本号, 来自编译时由build.rs从cargo.toml中读取的版本号(读取内容写入.version文件)
 const APP_VER: &str = include_str!(concat!(env!("OUT_DIR"), "/.version"));
 
@@ -42,8 +43,14 @@ appconfig::appconfig_define!(app_conf, AppConf,
     gw_prefix   : String => ["",   "gw-prefix",    "GwPrefix",          "Gateway path prefix"],
     api_expire  : String => ["",   "api-expire",   "ApiExpire",         "api service expire time (unit: seconds)"],
     conn_timeout: String => ["",   "conn-timeout", "ConnectTimeout",    "service connect timeout (unit: seconds)"],
-    token_issuer: String => ["i",  "token-issuer", "TokenIssuer",       "jwt token issuer, when this value is set, the iss of token will be verified"],
-    token_key   : String => ["k",  "token-key",    "TokenKey",          "jwt token key, when this value if set, proxy will add header X-Token-Verified true or false"],
+    jwt_issuer  : String => ["i",  "jwt-issuer",   "JwtIssuer",         "jwt token issuer, when this value is set, the iss of token will be verified"],
+    jwt_key     : String => ["k",  "jwt-key",      "JwtKey",            "jwt token key, when this value if set, proxy will add header X-Token-Verified true or false"],
+    redis_host  : String => ["H",  "redis-host",   "RedisHost",         "redis host, if set, redis will be used"],
+    redis_port  : String => ["",   "redis-port",   "RedisPort",         "redis port"],
+    redis_user  : String => ["",   "redis-user",   "RedisUser",         "redis username"],
+    redis_pass  : String => ["P",  "redis-pass",   "RedisPass",         "redis password"],
+    redis_db    : String => ["",   "redis-db",     "RedisDb",           "redis database"],
+    redis_prefix: String => ["R",  "redis-prefix", "RedisPrefix",       "redis key common prefix"],
 );
 
 impl Default for AppConf {
@@ -62,8 +69,14 @@ impl Default for AppConf {
             gw_prefix   : String::from("/gw"),
             api_expire  : String::from("90"),
             conn_timeout: String::from("3"),
-            token_issuer: String::with_capacity(0),
-            token_key   : String::with_capacity(0),
+            jwt_issuer  : String::with_capacity(0),
+            jwt_key     : String::with_capacity(0),
+            redis_host  : String::with_capacity(0),
+            redis_port  : String::with_capacity(0),
+            redis_user  : String::with_capacity(0),
+            redis_pass  : String::with_capacity(0),
+            redis_db    : String::with_capacity(0),
+            redis_prefix: String::from(APP_NAME),
         }
     }
 }
@@ -75,7 +88,7 @@ macro_rules! arg_err {
 }
 
 fn init() -> bool {
-    let mut buf = SmallString::<[u8; 512]>::new();
+    let mut buf = SmallStr::<512>::new();
 
     write!(buf, "{APP_NAME} version {APP_VER} CopyLeft Kivensoft 2023.").unwrap();
     let version = buf.as_str();
@@ -108,6 +121,7 @@ fn init() -> bool {
 
     asynclog::init_log(log_level, ac.log_file.clone(), log_max,
         !ac.no_console, true).expect("init log error");
+    asynclog::set_level("mio".to_owned(), log::LevelFilter::Info);
     asynclog::set_level("hyper_util".to_owned(), log::LevelFilter::Info);
 
     if let Some((s1, s2)) = BANNER.split_once('?') {
@@ -142,6 +156,7 @@ fn register_apis(srv: &mut HttpServer, ac: &AppConf) {
         "ping": apis::ping,
         "ping/*": apis::ping,
         "token": apis::token,
+        "blacklist": apis::blacklist,
         "status": apis::status,
         "query": apis::query,
         "query/*": apis::query,
@@ -150,6 +165,7 @@ fn register_apis(srv: &mut HttpServer, ac: &AppConf) {
         "cfg": apis::cfg,
         "cfg/*": apis::cfg,
         "recfg": apis::recfg,
+        "redis-auth": apis::redis_auth,
     );
 }
 
@@ -159,13 +175,13 @@ fn main() {
     if !init() { return; }
     let ac = AppConf::get();
 
-    let max_token_cache_size = ac.mtcs.parse().expect(arg_err!("mtcs"));
+    let max_jwt_cache_size = ac.mtcs.parse().expect(arg_err!("mtcs"));
     let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
     let (cancel_sender, cancel_manager) = httpserver::new_cancel();
 
     let mut srv = HttpServer::new();
     // 设置请求上下文路径
-    srv.set_content_path(&ac.context_path);
+    srv.set_context_path(&ac.context_path);
     // 路由支持1级子路径匹配
     srv.set_fuzzy_find(httpserver::FuzzyFind::One);
     // 添加日志中间件
@@ -175,12 +191,12 @@ fn main() {
     // 允许用户通过发送取消消息来优雅的终止服务
     srv.set_cancel_manager(cancel_manager);
 
-    if !ac.token_key.is_empty() {
+    if !ac.jwt_key.is_empty() {
         // 添加token校验中间件
         srv.set_middleware(auth::Authentication::new(
-            &ac.token_key,
-            &ac.token_issuer,
-            max_token_cache_size,
+            &ac.jwt_key,
+            &ac.jwt_issuer,
+            max_jwt_cache_size,
             10 * 60,
         ))
     };
@@ -189,18 +205,23 @@ fn main() {
     register_apis(&mut srv, ac);
 
     let async_fn = async move {
+        if !ac.redis_host.is_empty() {
+            redis::init(&ac.redis_host, &ac.redis_port, &ac.redis_user, &ac.redis_pass, &ac.redis_db)
+                .await.unwrap();
+        }
+
         // 运行http server主服务
         let listener = srv.listen(addr).await.expect("http server listen error");
 
         tokio::spawn(async move {
-            srv.serve(listener).await.expect("http server run error");
+            srv.arc().serve(listener).await.expect("http server run error");
         });
 
         // 监听ctrl+c事件
         match tokio::signal::ctrl_c().await {
             Ok(()) => {
-                println!("{APP_NAME} shutdowning... {}", cancel_sender.count());
-                cancel_sender.cancel_and_wait(Duration::from_millis(100)).await.unwrap();
+                println!("{APP_NAME} shutdowning, waiting {} connections closed...", cancel_sender.count());
+                cancel_sender.cancel_and_wait().await.unwrap();
             }
             Err(e) => {
                 eprintln!("Unable to listen for shutdown signal: {e:?}");

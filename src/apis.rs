@@ -1,21 +1,12 @@
 //! 网关应用提供的服务接口
 use crate::{
-    dict,
-    proxy::{self, ServiceGroup},
-    AppConf, AppGlobal,
+    auth, dict, proxy::{self, ServiceGroup}, redis, AppConf, AppGlobal
 };
 use compact_str::{format_compact, CompactString};
-use httpserver::{log_debug, log_error, log_info, HttpContext, HttpResponse, Resp};
+use httpserver::{http_bail, http_error, log_debug, log_error, log_info, HttpContext, HttpResponse, Resp};
 use localtime::LocalTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use triomphe::Arc;
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct PingRequest {
-    reply: Option<CompactString>,
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,9 +31,9 @@ pub async fn ping(ctx: HttpContext) -> HttpResponse {
 
     log_debug!(ctx.id, "ping from: {}", client);
 
-    let reply = get_reply_param(&ctx).await;
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    let reply = ctx.get_param_from_multi("reply", Some(0))
+        .map(CompactString::new)
+        .unwrap_or(CompactString::new("pong"));
 
     Resp::ok(&Res {
         reply,
@@ -68,16 +59,63 @@ pub async fn token(ctx: HttpContext) -> HttpResponse {
     }
 
     let ac = AppConf::get();
-    let param: Req = ctx.parse_json()?;
+    if ac.jwt_key.is_empty() {
+        return Resp::fail("jwt token generation is not supported");
+    }
 
+    let param: Req = ctx.parse_json()?;
     if !param.claims.is_object() {
-        return Resp::fail("request param format error");
+        return Resp::fail("jwt token claims must be object");
     }
 
     let exp = (param.ttl * 60) as u64;
-    let token = jwt::encode(param.claims, &ac.token_key, &ac.token_issuer, exp)?;
+    let token = jwt::encode(param.claims, &ac.jwt_key, &ac.jwt_issuer, exp)?;
 
     Resp::ok(&Res { token })
+}
+
+/// 将token加入黑名单
+pub async fn blacklist(ctx: HttpContext) -> HttpResponse {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Req {
+        token: CompactString,
+    }
+
+    let ac = AppConf::get();
+    if ac.redis_host.is_empty() {
+        log_error!(ctx.id, "redis is not configured");
+        http_bail!("Method Not Allowed");
+    } else if ac.jwt_key.is_empty() {
+        log_error!(ctx.id, "jwt key not configured");
+        http_bail!("Method Not Allowed");
+    }
+
+    let param: Req = ctx.parse_json()?;
+    log_info!(ctx.id, "set token {} to blacklist", param.token);
+
+    let claims = match jwt::decode(&param.token, &ac.jwt_key, &ac.jwt_issuer) {
+        Ok(v) => v,
+        Err(e) => {
+            log_error!(ctx.id, "decode token fail: {e:?}");
+            http_bail!("Invalid Token");
+        }
+    };
+
+    let exp = match jwt::get_exp(&claims) {
+        Ok(v) => v,
+        Err(_) => http_bail!("Invalid Token"),
+    };
+
+    let now = localtime::LocalTime::now();
+    let now_ts = now.timestamp() as u64;
+    let ttl = if now_ts <= exp { exp - now_ts } else { 24 * 3600 };
+    let sign = jwt::get_sign(&param.token).ok_or(http_error!("Invalid Token"))?;
+    let key = format_compact!("{}:{}:{}", ac.redis_prefix, auth::LOGOUT_KEY, sign);
+
+    redis::set(&key, &now.to_string(), ttl as u32).await?;
+
+    Resp::ok_with_empty()
 }
 
 /// 服务状态
@@ -130,7 +168,7 @@ pub async fn query(ctx: HttpContext) -> HttpResponse {
 
     // body中没有，尝试从路径中读取
     if param.path.is_none() {
-        if let Some(s) = ctx.get_path_val(0) {
+        if let Some(s) = ctx.get_path_param(0) {
             param.path = Some(CompactString::new(s));
         }
     }
@@ -245,8 +283,8 @@ pub async fn cfg(ctx: HttpContext) -> HttpResponse {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Req {
-        group: Option<CompactString>,
-        groups: Option<Vec<CompactString>>,
+        key: Option<CompactString>,
+        keys: Option<Vec<CompactString>>,
     }
 
     #[derive(Serialize)]
@@ -256,31 +294,31 @@ pub async fn cfg(ctx: HttpContext) -> HttpResponse {
         config: Option<dict::DictItems>,
     }
 
-    let mut param = ctx.parse_json_opt::<Req>()?.unwrap_or(Req {
-        group: None,
-        groups: None,
-    });
+    let mut param = match ctx.parse_json_opt::<Req>()? {
+        Some(v) => v,
+        None => Req { key: None, keys: None },
+    };
 
-    if param.group.is_none() {
-        if let Some(group) = ctx.get_path_val(0) {
-            param.group = Some(CompactString::new(group));
+    if param.key.is_none() {
+        if let Some(key) = ctx.get_path_param(0) {
+            param.key = Some(CompactString::new(key));
         }
     }
 
-    if param.group.is_none() && param.groups.is_none() {
+    if param.key.is_none() && param.keys.is_none() {
         return Resp::fail("param group or groups not find");
     }
 
-    let config = if let Some(group) = param.group {
-        dict::query(&group)
+    let config = if let Some(key) = param.key {
+        dict::query(&key)
     } else {
-        let mut tmp_config = Vec::new();
-        for g in param.groups.unwrap() {
-            if let Some(items) = dict::query(&g) {
-                tmp_config.extend_from_slice(items.as_slice());
+        let mut cfgs = Vec::new();
+        for k in param.keys.unwrap() {
+            if let Some(items) = dict::query(&k) {
+                cfgs.push(items);
             }
         }
-        Some(Arc::new(tmp_config))
+        Some(cfgs.concat())
     };
 
     Resp::ok(&Res { config })
@@ -299,39 +337,12 @@ pub async fn recfg(ctx: HttpContext) -> HttpResponse {
     }
 }
 
-/// 获取请求中reply参数, 获取优先级: post_data > query_string > url_path > default
-async fn get_reply_param(ctx: &HttpContext) -> CompactString {
-    const REPLY: &str = "reply";
-    const REPLY_DEFAULT: CompactString = CompactString::new_inline("pong");
-
-    // 优先从post的数据中提取
-    if !ctx.body.is_empty() {
-        if ctx.is_json() {
-            if let Ok(Some(param)) = ctx.parse_json_opt::<PingRequest>() {
-                log_info!(ctx.id, "param: {param:?}");
-                if let Some(reply) = param.reply {
-                    if !reply.is_empty() {
-                        return reply;
-                    }
-                }
-            }
-        } else if ctx.is_formd_urlencoded() {
-            if let Some(reply) = ctx.get_formdata_param_str(REPLY) {
-                return CompactString::new(reply);
-            }
-        }
+pub async fn redis_auth(_ctx: HttpContext) -> HttpResponse {
+    let ac = AppConf::get();
+    if !ac.redis_host.is_empty() {
+        redis::auth(&ac.redis_user, &ac.redis_pass, &ac.redis_db).await?;
+        Resp::ok_with_empty()
+    } else {
+        Resp::fail("redis is not configured")
     }
-
-    // 次优先从url参数中获取
-    if let Some(reply) =  ctx.get_url_param_str(REPLY) {
-        return CompactString::new(reply);
-    }
-
-    // 最低优先级从路径中获取
-    if let Some(reply) = ctx.get_path_val(0) {
-        return CompactString::new(reply);
-    }
-
-    // 如果都没有找到，返回缺省值
-    REPLY_DEFAULT
 }

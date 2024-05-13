@@ -235,7 +235,7 @@ impl Resp {
     #[inline]
     pub fn ok<T: ?Sized + Serialize>(data: &T) -> HttpResponse {
         // Self::ok_opt(Some(data))
-        let mut w = Vec::with_capacity(512);
+        let mut w = Vec::with_capacity(256);
         w.extend_from_slice(br#"{"code":200,"data":"#);
         #[cfg(not(feature = "english"))]
         serde_json::to_writer(&mut w, data).context("json序列化失败")?;

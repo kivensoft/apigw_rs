@@ -40,15 +40,21 @@ impl CancelSender {
         self.sender.send(true)
     }
 
-    pub async fn wait(&self, sleep: Duration) {
-        while self.count.load(Ordering::Acquire) != 0 {
-            tokio::time::sleep(sleep).await;
+    pub async fn wait(&self) {
+        let tick = Duration::from_millis(100);
+        let mut count = 0;
+        while self.count.load(Ordering::Acquire) != 0 && count < 100 {
+            tokio::time::sleep(tick).await;
+            count += 1;
+            if count % 10 == 0 {
+                println!("wait {}s ...", count / 10);
+            }
         }
     }
 
-    pub async fn cancel_and_wait(&self, sleep: Duration) -> Result<(), SendError<bool>> {
+    pub async fn cancel_and_wait(&self) -> Result<(), SendError<bool>> {
         self.cancel()?;
-        self.wait(sleep).await;
+        self.wait().await;
         Ok(())
     }
 

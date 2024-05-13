@@ -13,7 +13,7 @@ use hyper_util::{
 };
 use localtime::LocalTime;
 use serde::Serialize;
-use smallstr::SmallString;
+use small_str::SmallStr;
 
 use std::{collections::VecDeque, fmt::Write, sync::OnceLock, time::Duration};
 
@@ -248,7 +248,7 @@ fn get_service_endpoint(mut path: &str) -> Option<CompactString> {
 
 #[inline(never)]
 fn create_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
-    let mut buf = SmallString::<[u8; 512]>::new();
+    let mut buf = SmallStr::<512>::new();
     write!(buf, "http://{endpoint}{path_and_query}")?;
 
     buf.as_str().parse().context("parse forward uri fail")
