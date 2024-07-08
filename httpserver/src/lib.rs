@@ -38,7 +38,7 @@ pub use httperror::HttpError;
 /// http header "Content-Type"
 pub const CONTENT_TYPE: &str = "Content-Type";
 /// http header "applicatoin/json; charset=UTF-8"
-pub const APPLICATION_JSON: &'static str = "applicatoin/json; charset=UTF-8";
+pub const APPLICATION_JSON: &'static str = "applicatoin/json;charset=UTF-8";
 
 // Simplified declaration
 pub type Request = hyper::Request<Full<Bytes>>;
@@ -370,7 +370,7 @@ impl HttpServer {
                         canceler.finish();
                         if canceler.is_cancel() {
                             #[cfg(not(feature = "english"))]
-                            log_trace!(id, "取消http请求任务, 剩余待取消任务: {}", cancel.count());
+                            log_trace!(id, "取消http请求任务, 剩余待取消任务: {}", canceler.count());
                             #[cfg(feature = "english")]
                             log_trace!(id, "cancel http request task, remaining http request task: {}", canceler.count());
                         }

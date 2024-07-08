@@ -1,6 +1,6 @@
 use anyhow_ext::{Result, Context};
-use appconfig::Config;
-use arc_swap::ArcSwapOption;
+use appcfg::Config;
+// use arc_swap::ArcSwapOption;
 use compact_str::CompactString;
 use qp_trie::{wrapper::BString, Trie};
 use serde::Serialize;
@@ -10,7 +10,8 @@ pub type DictItems = Vec<DictItem>;
 type DictValue = Arc<CompactString>;
 type DictData = Trie<BString, DictValue>;
 
-static DICT_MAP: ArcSwapOption<DictData> = ArcSwapOption::const_empty();
+// static DICT_MAP: ArcSwapOption<DictData> = ArcSwapOption::const_empty();
+static mut DICT_MAP: Option<Arc<DictData>> = None;
 
 #[derive(Serialize, Clone)]
 pub struct DictItem {
@@ -19,11 +20,12 @@ pub struct DictItem {
 }
 
 pub fn query(key_prefix: &str) -> Option<DictItems> {
-    let dict_data = DICT_MAP.load();
-    let dict_data = match dict_data.as_ref() {
-        Some(v) => v,
+    // let dict_data = DICT_MAP.load();
+    // let dict_data = match dict_data.as_ref() {
+    let dict_data = match unsafe { &DICT_MAP } {
+        Some(v) => v.clone(),
         None => {
-            log::warn!("config data is empty");
+            log::warn!("config data is None");
             return None;
         }
     };
@@ -49,7 +51,8 @@ pub fn load(filename: &str) -> Result<()> {
         dict_data.insert_str(key, Arc::new(CompactString::new(value)));
     }
 
-    DICT_MAP.store(Some(std::sync::Arc::new(dict_data)));
+    // DICT_MAP.store(Some(std::sync::Arc::new(dict_data)));
+    unsafe { DICT_MAP = Some(Arc::new(dict_data)); }
 
     Ok(())
 }

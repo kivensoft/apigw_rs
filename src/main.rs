@@ -3,13 +3,14 @@ mod apis;
 mod dict;
 mod proxy;
 mod redis;
+mod staticmut;
 mod syssrv;
 
 use std::fmt::Write;
 
+use anyhow_ext::Context;
 use compact_str::CompactString;
 use httpserver::HttpServer;
-use small_str::SmallStr;
 
 const BANNER: &str = r#"
     ___          _    ______      __  Kivensoft ?
@@ -24,12 +25,13 @@ pub const APP_NAME: &str = include_str!(concat!(env!("OUT_DIR"), "/.app_name"));
 /// app版本号, 来自编译时由build.rs从cargo.toml中读取的版本号(读取内容写入.version文件)
 const APP_VER: &str = include_str!(concat!(env!("OUT_DIR"), "/.version"));
 
-appconfig::appglobal_define!(app_global, AppGlobal,
+appcfg::appglobal_define!(app_global, AppGlobal,
     heart_break_live_time: u32,
+    redis_ttl            : u64,
     startup_time         : u64,
 );
 
-appconfig::appconfig_define!(app_conf, AppConf,
+appcfg::appconfig_define!(app_conf, AppConf,
     log_level   : String => ["L",  "log-level",    "LogLevel",          "log level(trace/debug/info/warn/error/off)"],
     log_file    : String => ["F",  "log-file",     "LogFile",           "log filename"],
     log_max     : String => ["M",  "log-max",      "LogFileMaxSize",    "log file max size (unit: k/m/g)"],
@@ -51,6 +53,7 @@ appconfig::appconfig_define!(app_conf, AppConf,
     redis_pass  : String => ["P",  "redis-pass",   "RedisPass",         "redis password"],
     redis_db    : String => ["",   "redis-db",     "RedisDb",           "redis database"],
     redis_prefix: String => ["R",  "redis-prefix", "RedisPrefix",       "redis key common prefix"],
+    redis_ttl:    String => ["",   "redis-ttl",    "RedisTtl",          "redis cache ttl"],
 );
 
 impl Default for AppConf {
@@ -77,6 +80,7 @@ impl Default for AppConf {
             redis_pass  : String::with_capacity(0),
             redis_db    : String::with_capacity(0),
             redis_prefix: String::from(APP_NAME),
+            redis_ttl   : String::from("300"),
         }
     }
 }
@@ -88,13 +92,13 @@ macro_rules! arg_err {
 }
 
 fn init() -> bool {
-    let mut buf = SmallStr::<512>::new();
+    let mut buf = String::with_capacity(512);
 
-    write!(buf, "{APP_NAME} version {APP_VER} CopyLeft Kivensoft 2023.").unwrap();
+    write!(buf, "{APP_NAME} version {APP_VER} CopyLeft Kivensoft 2023-2024.").unwrap();
     let version = buf.as_str();
 
     let ac = AppConf::init();
-    if !appconfig::parse_args(ac, version).expect("parse args error") {
+    if !appcfg::parse_args(ac, version).expect("parse args error") {
         return false;
     }
 
@@ -105,6 +109,7 @@ fn init() -> bool {
 
     AppGlobal::init(AppGlobal {
         heart_break_live_time: ac.api_expire.parse().expect(arg_err!("api-expire")),
+        redis_ttl: ac.redis_ttl.parse().expect(arg_err!("redis-ttl")),
         startup_time: localtime::unix_timestamp(),
     });
 
@@ -130,7 +135,7 @@ fn init() -> bool {
         buf.push_str(APP_VER);
         // buf.push_str(&s2[APP_VER.len() - 1..]);
         buf.push_str(s2);
-        appconfig::print_banner(&buf, true);
+        appcfg::print_banner(&buf, true);
     }
 
     // 加载配置文件内容
@@ -165,7 +170,6 @@ fn register_apis(srv: &mut HttpServer, ac: &AppConf) {
         "cfg": apis::cfg,
         "cfg/*": apis::cfg,
         "recfg": apis::recfg,
-        "redis-auth": apis::redis_auth,
     );
 }
 
@@ -205,9 +209,15 @@ fn main() {
     register_apis(&mut srv, ac);
 
     let async_fn = async move {
+        // 初始化redis连接池
         if !ac.redis_host.is_empty() {
-            redis::init(&ac.redis_host, &ac.redis_port, &ac.redis_user, &ac.redis_pass, &ac.redis_db)
-                .await.unwrap();
+            redis::init(&redis::RedisConfig {
+                host: &ac.redis_host,
+                port: &ac.redis_port,
+                user: &ac.redis_user,
+                pass: &ac.redis_pass,
+                db: &ac.redis_db,
+            }).await.context("connect redis fail").unwrap();
         }
 
         // 运行http server主服务

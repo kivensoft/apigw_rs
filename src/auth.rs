@@ -3,16 +3,15 @@ use cookie::Cookie;
 use httpserver::{log_debug, log_trace, log_warn, HttpContext, HttpResponse, Next};
 use hyper::http::HeaderValue;
 use serde_json::Value;
-use small_str::SmallStr;
+use tokio::task;
 use std::{borrow::Cow, fmt::Write, time::Duration};
 use triomphe::Arc;
 
-use crate::{redis, AppConf};
+use crate::{redis, AppConf, AppGlobal};
 
 const ACCESS_TOKEN: &str = "access_token";
 const COOKIE_NAME: &str = "Cookie";
 const TOKEN_VERIFIED: &str = "X-Token-Verified";
-const REDIS_TTL: u32 = 3600;
 pub const LOGIN_KEY: &str = "login";
 pub const LOGOUT_KEY: &str = "logout";
 
@@ -75,11 +74,14 @@ impl Authentication {
                 None => None,
             }
         };
+
+        // 判断token是否过期
         if let Some(claims) = claims {
             return match jwt::check_exp(&claims) {
                 Ok(_) => true,
                 Err(_) => {
-                    // self.token_cache.invalidate(&sign);
+                    self.token_cache.invalidate(&sign);
+                    delete_from_redis(&sign);
                     log_warn!(req_id, "jwt token expired");
                     false
                 }
@@ -89,7 +91,7 @@ impl Authentication {
         // 缓存中没有，进行验证步骤，并将解析的claims缓存起来
         match jwt::decode(token, &self.key, &self.iss) {
             Ok(claims) => {
-                save_to_redis(&sign, &claims).await;
+                save_to_redis(&sign, &claims);
                 self.token_cache.insert(sign, Arc::new(claims));
                 true
             }
@@ -179,13 +181,14 @@ impl httpserver::HttpMiddleware for Authentication {
     }
 }
 
+/// 判断token是否在黑名单中（用户已更新token或者用户已被删除或者已退出登录）
 async fn is_blacklist(sign: &str) -> bool {
     let ac = AppConf::get();
     if !ac.redis_host.is_empty() {
-        let mut key = SmallStr::<128>::new();
+        let mut key = String::with_capacity(128);
         write!(key, "{}:{}:{}", ac.redis_prefix, LOGOUT_KEY, sign).unwrap();
 
-        if let Ok(Some(_)) = redis::get(&key).await {
+        if redis::get(&key).await.unwrap_or(None).is_some() {
             return true;
         }
     }
@@ -193,24 +196,17 @@ async fn is_blacklist(sign: &str) -> bool {
     false
 }
 
+/// 从redis中加载签名对应的信息
 async fn load_from_redis(sign: &str) -> Option<Arc<Value>> {
-    let ac = AppConf::get();
-    if ac.redis_host.is_empty() {
+    if AppConf::get().redis_host.is_empty() {
         return None;
     }
 
-    let mut key = SmallStr::<128>::new();
-    write!(key, "{}:{}:{}", ac.redis_prefix, LOGIN_KEY, sign).unwrap();
+    let key = gen_redis_key(sign);
 
-    let value = match redis::get(&key).await {
-        Ok(v) => match v {
-            Some(v) => v,
-            None => return None,
-        },
-        Err(e) => {
-            log::error!("load token from redis error: {:?}", e);
-            return None;
-        }
+    let value: String = match redis::get(&key).await.unwrap_or(None) {
+        Some(v) => v,
+        None => return None,
     };
 
     let claims: Arc<Value> = match serde_json::from_str(&value) {
@@ -224,19 +220,46 @@ async fn load_from_redis(sign: &str) -> Option<Arc<Value>> {
     Some(claims)
 }
 
-async fn save_to_redis(sign: &str, claims: &Value) {
-    let ac = AppConf::get();
-    if ac.redis_host.is_empty() {
+/// 保存签名对应的信息到redis(异步方式保存)
+fn save_to_redis(sign: &str, claims: &Value) {
+    if AppConf::get().redis_host.is_empty() {
         return;
     }
 
-    let mut key = SmallStr::<128>::new();
-    write!(key, "{}:{}:{}", ac.redis_prefix, LOGIN_KEY, sign).unwrap();
-
-    if let Ok(value) = serde_json::to_string(claims) {
-        if let Err(e) = redis::set(&key, &value, REDIS_TTL).await {
-            log::error!("save_to_redis error: {:?}", e);
+    let key = gen_redis_key(sign);
+    match serde_json::to_string(claims) {
+        Ok(value) => {
+            task::spawn(async move {
+                let (k, v) = (key, value);
+                let ttl = AppGlobal::get().redis_ttl as u32;
+                if let Err(e) = redis::set(&k, &v, ttl).await {
+                    log::error!("save_to_redis error: {}", e);
+                }
+            });
         }
+        Err(e) => {
+            log::error!("serialize token to json error: {:?}", e);
+        }
+    };
+}
+
+/// 从redis删除签名对应的信息(异步方式删除)
+fn delete_from_redis(sign: &str) {
+    if AppConf::get().redis_host.is_empty() {
+        return;
     }
 
+    let key = gen_redis_key(sign);
+    task::spawn(async move {
+        let k = key;
+        if let Err(e) = redis::del(&k).await {
+            log::error!("redis delete key {} error: {:?}", k, e);
+        }
+    });
+}
+
+fn gen_redis_key(sign: &str) -> String {
+    let mut key = String::with_capacity(128);
+    write!(key, "{}:{}:{}", AppConf::get().redis_prefix, LOGIN_KEY, sign).unwrap();
+    key
 }

@@ -1,7 +1,7 @@
 # cargo build --release --target=x86_64-unknown-linux-musl
 [package]
 name = "apigw"
-version = "0.9.9"
+version = "0.9.10"
 authors = ["kiven <kivensoft@gmail.com>"]
 edition = "2021"
 description = "intelligent community api gateway"
@@ -23,8 +23,8 @@ default = ["multi_thread"]
 multi_thread = []
 
 [dependencies]
-tokio = { version = "1.37", features = ["fs", "signal", "time"] } # 最流行的异步io库
-hyper = { version = "1.3", features = ["http1", "client"] } # 最流行的底层http协议库
+tokio = { version = "1.38", features = ["fs", "signal", "time"] } # 最流行的异步io库
+hyper = { version = "1.4", features = ["http1", "client"] } # 最流行的底层http协议库
 hyper-util = { version = "0.1", features = [ "client", "client-legacy", "http1", "tokio" ] } #hyper 扩展库
 http-body-util = "0.1" # http body 扩展库
 serde = { version = "1.0", features = ["derive", "rc"] } # 最流行的序列化反序列化库
@@ -36,23 +36,31 @@ cookie = { version = "0.18", features = ["percent-encode"] } # http cookie库
 # anyhow = "1.0" # 最流行的错误处理库
 anyhow_ext = "0.2" # anyhow扩展库
 log = "0.4" # 日志门面库，官方标准
-time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] } # 官方推荐的日期时间库
+futures = "0.3" # 异步编程的官方库
+futures-util = "0.3" # 异步扩展库
+# time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] } # 官方推荐的日期时间库
 async-trait = "0.1" # trait的异步函数声明库
 compact_str = { version = "0.7", features = ["serde", "bytes"] } # 小字符串内嵌的字符串替代库
 parking_lot = "0.12" # 性能更好的替代标准库Mutex/RwLock的三方库
 triomphe = "0.1" # 比标准库的Arc更轻量的替代类
-arc-swap = "1.7" # 类似Mutex<Arc<T>>的类，但更高效
+# arc-swap = "1.7" # 类似Mutex<Arc<T>>的类，但更高效
 # fnv = "1.0" # 在小数量时比hashmap更快的map
 mini-moka = "0.10" # 轻量级缓存库，rust版本的Caffeine实现
-dashmap = "5.5" # 高性能线程安全map
+dashmap = "6.0" # 高性能线程安全map
 qp-trie = "0.8" # 一个基于qp算法的快速字典树
 # smallvec = { version = "1.10", features = ["write"] } # 基于栈的动态数组
-small_str = "0.1" # 基于栈的字符串
+# small_str = "0.1" # 基于栈的字符串
 rand = "0.8" # 最广泛使用的随机数生成库
 itoa = "1" # 快速整数转字符串库
-appconfig = { version = "1.0", git = "https://gitee.com/kivensoft/appconfig_rs.git" } # 支持命令行参数解析和配置文件参数解析的库
-ansicolor = { version = "1.0", git = "https://gitee.com/kivensoft/ansicolor_rs.git" } # 支持终端ansi颜色的库
-asynclog = { version = "1.0", features = ["tokio"], git = "https://gitee.com/kivensoft/asynclog_rs.git" } # 支持同步和异步两种方式的迷你日志实现库
-localtime = { version = "1.0", git = "https://gitee.com/kivensoft/localtime_rs.git" } # 本地时间序列化反序列化库
-jwt = { version = "1.0", git = "https://gitee.com/kivensoft/jwt_rs.git" } # 迷你的http库
-httpserver = { version = "1.0", path = "httpserver", features = ["english"]} # 迷你的http库
+# 支持命令行参数解析和配置文件参数解析的库
+appcfg = { version = "1.0" }
+# 支持终端ansi颜色的库
+ansicolor = "1.0"
+# 支持同步和异步两种方式的迷你日志实现库
+asynclog = { version = "1.0", features = ["tokio"] }
+# 本地时间序列化反序列化库
+localtime = { version = "1.0", git = "https://gitee.com/kivensoft/localtime_rs.git" }
+# 迷你的http库
+jwt = { version = "1.0", git = "https://gitee.com/kivensoft/jwt_rs.git" }
+# 迷你的http库
+httpserver = { version = "1.0", features = ["english"], path = "httpserver" }

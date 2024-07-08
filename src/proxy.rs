@@ -13,9 +13,8 @@ use hyper_util::{
 };
 use localtime::LocalTime;
 use serde::Serialize;
-use small_str::SmallStr;
 
-use std::{collections::VecDeque, fmt::Write, sync::OnceLock, time::Duration};
+use std::{collections::VecDeque, sync::OnceLock, time::Duration};
 
 use crate::{AppConf, AppGlobal};
 
@@ -64,14 +63,14 @@ pub fn register_service(path: &str, endpoint: &str) -> bool {
             // 对应端点的服务找到，更新过期时间
             Some(svr) => {
                 svr.expire = expire;
-                log::trace!("注册服务: 更新服务{}:{}的过期时间", endpoint, path);
+                log::trace!("register service: update {}:{} expire time", endpoint, path);
                 return false;
             }
             // 找不到，创建服务并添加到链表末尾
             None => svr_list.push_back(ServiceInfo {
                 endpoint: CompactString::new(endpoint),
                 expire,
-            }),
+            })
         },
         // 路径对应没有服务，创建服务及链表
         None => {
@@ -93,7 +92,7 @@ pub fn unregister_service(path: &str, endpoint: &str) {
         let old_len = svr_list.len();
         svr_list.retain(|v| v.endpoint.as_str() != endpoint);
         if old_len > svr_list.len() {
-            log::trace!("删除服务：{}:{}", endpoint, path);
+            log::trace!("remove service：{}:{}", endpoint, path);
         }
         if svr_list.is_empty() {
             get_services().remove(path);
@@ -246,12 +245,15 @@ fn get_service_endpoint(mut path: &str) -> Option<CompactString> {
     None
 }
 
-#[inline(never)]
 fn create_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
-    let mut buf = SmallStr::<512>::new();
-    write!(buf, "http://{endpoint}{path_and_query}")?;
-
-    buf.as_str().parse().context("parse forward uri fail")
+    let mut buf = String::with_capacity(128);
+    buf.push_str("http://");
+    buf.push_str(endpoint);
+    if !path_and_query.is_empty() {
+        buf.push('?');
+        buf.push_str(path_and_query);
+    }
+    buf.parse().context("parse forward uri fail")
 }
 
 /// 基于子路径的递归查找取消注册服务功能

@@ -3,7 +3,7 @@ use crate::{
     auth, dict, proxy::{self, ServiceGroup}, redis, AppConf, AppGlobal
 };
 use compact_str::{format_compact, CompactString};
-use httpserver::{http_bail, http_error, log_debug, log_error, log_info, HttpContext, HttpResponse, Resp};
+use httpserver::{http_bail, http_error, log_error, log_info, HttpContext, HttpResponse, Resp};
 use localtime::LocalTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,12 +24,11 @@ pub async fn ping(ctx: HttpContext) -> HttpResponse {
         reply: CompactString,
         now: LocalTime,
         server: CompactString,
-        client: CompactString,
+        ip: CompactString,
     }
 
-    let client: CompactString = format_compact!("{}", ctx.addr);
-
-    log_debug!(ctx.id, "ping from: {}", client);
+    let ip: CompactString = format_compact!("{}", ctx.addr);
+    log_info!(ctx.id, "ping from: {}", ip);
 
     let reply = ctx.get_param_from_multi("reply", Some(0))
         .map(CompactString::new)
@@ -39,7 +38,7 @@ pub async fn ping(ctx: HttpContext) -> HttpResponse {
         reply,
         now: LocalTime::now(),
         server: format_compact!("{}/{}", crate::APP_NAME, crate::APP_VER),
-        client,
+        ip,
     })
 }
 
@@ -68,6 +67,7 @@ pub async fn token(ctx: HttpContext) -> HttpResponse {
         return Resp::fail("jwt token claims must be object");
     }
 
+    log_info!(ctx.id, "create jwt token from {}", param.claims);
     let exp = (param.ttl * 60) as u64;
     let token = jwt::encode(param.claims, &ac.jwt_key, &ac.jwt_issuer, exp)?;
 
@@ -83,37 +83,24 @@ pub async fn blacklist(ctx: HttpContext) -> HttpResponse {
     }
 
     let ac = AppConf::get();
-    if ac.redis_host.is_empty() {
-        log_error!(ctx.id, "redis is not configured");
-        http_bail!("Method Not Allowed");
-    } else if ac.jwt_key.is_empty() {
-        log_error!(ctx.id, "jwt key not configured");
-        http_bail!("Method Not Allowed");
+    if ac.redis_host.is_empty() || ac.jwt_key.is_empty() {
+        http_bail!("Not Support Jwt Token");
     }
 
     let param: Req = ctx.parse_json()?;
     log_info!(ctx.id, "set token {} to blacklist", param.token);
 
-    let claims = match jwt::decode(&param.token, &ac.jwt_key, &ac.jwt_issuer) {
-        Ok(v) => v,
-        Err(e) => {
-            log_error!(ctx.id, "decode token fail: {e:?}");
-            http_bail!("Invalid Token");
-        }
-    };
-
-    let exp = match jwt::get_exp(&claims) {
-        Ok(v) => v,
-        Err(_) => http_bail!("Invalid Token"),
+    if let Err(e) = jwt::decode(&param.token, &ac.jwt_key, &ac.jwt_issuer) {
+        log_error!(ctx.id, "decode token fail: {e:?}");
+        http_bail!("Invalid Token");
     };
 
     let now = localtime::LocalTime::now();
-    let now_ts = now.timestamp() as u64;
-    let ttl = if now_ts <= exp { exp - now_ts } else { 24 * 3600 };
-    let sign = jwt::get_sign(&param.token).ok_or(http_error!("Invalid Token"))?;
+    let sign = jwt::get_sign(&param.token).ok_or_else(|| http_error!("Invalid Token"))?;
     let key = format_compact!("{}:{}:{}", ac.redis_prefix, auth::LOGOUT_KEY, sign);
+    let ttl = AppGlobal::get().redis_ttl as u32;
 
-    redis::set(&key, &now.to_string(), ttl as u32).await?;
+    redis::set(&key, &now.to_string(), ttl).await?;
 
     Resp::ok_with_empty()
 }
@@ -179,7 +166,7 @@ pub async fn query(ctx: HttpContext) -> HttpResponse {
 
     // 优先使用path参数
     if let Some(path) = &param.path {
-        log_debug!(ctx.id, "查找 {path} 对应的服务");
+        log_info!(ctx.id, "查找 {path} 对应的服务");
         let services = proxy::service_query(path);
         return Resp::ok(&Res {
             path: param.path.clone(),
@@ -334,15 +321,5 @@ pub async fn recfg(ctx: HttpContext) -> HttpResponse {
     } else {
         log_error!(ctx.id, "reload dict-file error: arg dict-file is no specified");
         Resp::fail("arg dict-file no specified")
-    }
-}
-
-pub async fn redis_auth(_ctx: HttpContext) -> HttpResponse {
-    let ac = AppConf::get();
-    if !ac.redis_host.is_empty() {
-        redis::auth(&ac.redis_user, &ac.redis_pass, &ac.redis_db).await?;
-        Resp::ok_with_empty()
-    } else {
-        Resp::fail("redis is not configured")
     }
 }
