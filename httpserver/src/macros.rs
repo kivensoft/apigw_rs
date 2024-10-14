@@ -4,13 +4,15 @@
 #[macro_export]
 macro_rules! http_bail {
     ($msg:literal) => {
-        return Err($crate::HttpError::create(String::from($msg)))
+        return Err($crate::HttpError::new($msg.to_string()))
     };
-    ($err:expr) => {
-        return Err($crate::HttpError::create($err))
+
+    ($msg:expr) => {
+        return Err($crate::HttpError::new($msg))
     };
+
     ($fmt:literal, $($arg:tt)*) => {
-        return Err($crate::HttpError::create(format!($fmt, $($arg)*)))
+        return Err($crate::HttpError::new(format!($fmt, $($arg)*)))
     };
 }
 
@@ -18,13 +20,15 @@ macro_rules! http_bail {
 #[macro_export]
 macro_rules! http_error {
     ($msg:literal) => {
-        $crate::HttpError::create(String::from($msg))
+        $crate::HttpError::new($msg.to_string())
     };
+
     ($err:expr) => {
-        $crate::HttpError::create($err)
+        $crate::HttpError::new($err)
     };
+
     ($fmt:literal, $($arg:tt)*) => {
-        $crate::HttpError::create(format!($fmt, $($arg)*))
+        $crate::HttpError::new(format!($fmt, $($arg)*))
     };
 }
 
@@ -48,8 +52,7 @@ macro_rules! http_error {
 macro_rules! register_apis {
     ($server:expr, $base:expr, $($path:literal : $handler:expr,)+) => {
         $(
-            $server.register(&$crate::compact_str::format_compact!("{}{}",
-                $base, $path), $handler);
+            $server.register(&format!("{}{}", $base, $path), $handler);
         )*
     };
 }
@@ -73,9 +76,9 @@ macro_rules! check_required {
         $(
             if $val.$attr.is_none() {
                 #[cfg(not(feature = "english"))]
-                $crate::http_bail!(format!("{}{}", stringify!($attr), " 不能为空"))
+                $crate::http_bail!(format!("{}{}", stringify!($attr), " 不能为空"));
                 #[cfg(feature = "english")]
-                $crate::http_bail!(format!("{}{}", stringify!($attr), " cannot be null"))
+                $crate::http_bail!(format!("{}{}", stringify!($attr), " cannot be null"));
             }
         )*
     };
@@ -130,12 +133,12 @@ macro_rules! assign_required {
 macro_rules! fail_if {
     ($b:expr, $msg:literal) => {
         if $b {
-            $crate::http_bail!(String::from($msg))
+            $crate::http_bail!(String::from($msg));
         }
     };
     ($b:expr, $($t:tt)+) => {
         if $b {
-            $crate::http_bail!(format!($($t)*))
+            $crate::http_bail!(format!($($t)*));
         }
     };
 }
@@ -158,6 +161,15 @@ macro_rules! if_else {
             $val1
         } else {
             $val2
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! if_expr {
+    ($b:expr, $exp:expr) => {
+        if $b {
+            $exp
         }
     };
 }

@@ -23,7 +23,8 @@ default = ["multi_thread"]
 multi_thread = []
 
 [dependencies]
-tokio = { version = "1.38", features = ["fs", "signal", "time"] } # 最流行的异步io库
+tokio = { version = "1.40", features = ["fs", "signal", "time"] } # 最流行的异步io库
+tokio-utils = "0.1"
 hyper = { version = "1.4", features = ["http1", "client"] } # 最流行的底层http协议库
 hyper-util = { version = "0.1", features = [ "client", "client-legacy", "http1", "tokio" ] } #hyper 扩展库
 http-body-util = "0.1" # http body 扩展库
@@ -40,27 +41,27 @@ futures = "0.3" # 异步编程的官方库
 futures-util = "0.3" # 异步扩展库
 # time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] } # 官方推荐的日期时间库
 async-trait = "0.1" # trait的异步函数声明库
-compact_str = { version = "0.7", features = ["serde", "bytes"] } # 小字符串内嵌的字符串替代库
+# compact_str = { version = "0.8", features = ["serde", "bytes"] } # 小字符串内嵌的字符串替代库
 parking_lot = "0.12" # 性能更好的替代标准库Mutex/RwLock的三方库
 triomphe = "0.1" # 比标准库的Arc更轻量的替代类
-# arc-swap = "1.7" # 类似Mutex<Arc<T>>的类，但更高效
+arc-swap = "1.7" # 类似Mutex<Arc<T>>的类，但更高效
 # fnv = "1.0" # 在小数量时比hashmap更快的map
 mini-moka = "0.10" # 轻量级缓存库，rust版本的Caffeine实现
-dashmap = "6.0" # 高性能线程安全map
+dashmap = "6.1" # 高性能线程安全map
 qp-trie = "0.8" # 一个基于qp算法的快速字典树
 # smallvec = { version = "1.10", features = ["write"] } # 基于栈的动态数组
 # small_str = "0.1" # 基于栈的字符串
 rand = "0.8" # 最广泛使用的随机数生成库
-itoa = "1" # 快速整数转字符串库
+itoa = "1.0" # 快速整数转字符串库
 # 支持命令行参数解析和配置文件参数解析的库
 appcfg = { version = "1.0" }
 # 支持终端ansi颜色的库
 ansicolor = "1.0"
 # 支持同步和异步两种方式的迷你日志实现库
-asynclog = { version = "1.0", features = ["tokio"] }
+asynclog = { version = "1", features = ["tokio"] }
 # 本地时间序列化反序列化库
-localtime = { version = "1.0", git = "https://gitee.com/kivensoft/localtime_rs.git" }
+localtime = { git = "https://gitee.com/kivensoft/localtime_rs.git" }
 # 迷你的http库
-jwt = { version = "1.0", git = "https://gitee.com/kivensoft/jwt_rs.git" }
+jwt = { git = "https://gitee.com/kivensoft/jwt_rs.git" }
 # 迷你的http库
 httpserver = { version = "1.0", features = ["english"], path = "httpserver" }

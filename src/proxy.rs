@@ -1,5 +1,4 @@
 use anyhow_ext::{Context, Result};
-use compact_str::CompactString;
 use dashmap::DashMap;
 use http_body_util::{BodyExt, Full};
 use httpserver::{
@@ -19,7 +18,7 @@ use std::{collections::VecDeque, sync::OnceLock, time::Duration};
 use crate::{AppConf, AppGlobal};
 
 type ServiceInfoList = VecDeque<ServiceInfo>;
-type ServicesType = DashMap<CompactString, ServiceInfoList>;
+type ServicesType = DashMap<String, ServiceInfoList>;
 
 /// 已注册的服务列表
 static SERVICES: OnceLock<ServicesType> = OnceLock::new();
@@ -27,20 +26,20 @@ static SERVICES: OnceLock<ServicesType> = OnceLock::new();
 static CLIENT: OnceLock<Client<HttpConnector, Full<Bytes>>> = OnceLock::new();
 
 struct ServiceInfo {
-    endpoint: CompactString,
+    endpoint: String,
     expire: i64,
 }
 
 #[derive(Serialize)]
 pub struct ServiceItem {
-    endpoint: CompactString,
+    endpoint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     expire: Option<LocalTime>,
 }
 
 #[derive(Serialize)]
 pub struct ServiceGroup {
-    path: CompactString,
+    path: String,
     services: Vec<ServiceItem>,
 }
 
@@ -68,7 +67,7 @@ pub fn register_service(path: &str, endpoint: &str) -> bool {
             }
             // 找不到，创建服务并添加到链表末尾
             None => svr_list.push_back(ServiceInfo {
-                endpoint: CompactString::new(endpoint),
+                endpoint: String::from(endpoint),
                 expire,
             })
         },
@@ -76,10 +75,10 @@ pub fn register_service(path: &str, endpoint: &str) -> bool {
         None => {
             let mut svr_list = ServiceInfoList::new();
             svr_list.push_back(ServiceInfo {
-                endpoint: CompactString::new(endpoint),
+                endpoint: String::from(endpoint),
                 expire,
             });
-            get_services().insert(CompactString::new(path), svr_list);
+            get_services().insert(String::from(path), svr_list);
         }
     };
 
@@ -126,11 +125,11 @@ pub fn service_status() -> Vec<ServiceGroup> {
 
             if !services.is_empty() {
                 Some(ServiceGroup {
-                    path: CompactString::new(item.key()),
+                    path: String::from(item.key()),
                     services,
                 })
             } else {
-                del_keys.push(CompactString::new(item.key()));
+                del_keys.push(String::from(item.key()));
                 None
             }
         })
@@ -181,7 +180,7 @@ pub fn service_query(mut path: &str) -> Option<Vec<ServiceItem>> {
 
 /// 反向代理函数
 pub async fn proxy_handler(ctx: HttpContext) -> HttpResponse {
-    let path = CompactString::new(ctx.req.uri().path());
+    let path = String::from(ctx.req.uri().path());
     let path_and_query = ctx.req.uri().path_and_query().unwrap().as_str();
     let mut finded = false;
 
@@ -218,7 +217,7 @@ pub async fn proxy_handler(ctx: HttpContext) -> HttpResponse {
     }
 }
 
-fn get_service_endpoint(mut path: &str) -> Option<CompactString> {
+fn get_service_endpoint(mut path: &str) -> Option<String> {
     let services = get_services();
 
     while !path.is_empty() {

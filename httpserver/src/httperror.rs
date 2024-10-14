@@ -10,49 +10,28 @@ pub struct HttpError {
 }
 
 impl HttpError {
-    pub fn create(message: String) -> Error {
+    pub fn new(message: String) -> Error {
         Error::new(Self { code: 500, message, source: None })
     }
 
-    pub fn create_with_code(code: u32, message: String) -> Error {
+    pub fn new_with_code(code: u32, message: String, ) -> Error {
         Error::new(Self { code, message, source: None })
     }
 
-    pub fn create_with_source<E>(message: String, source: E) -> Error
+    pub fn new_with_source<E>(message: String, source: E) -> Error
     where
         E: StdError + Sync + Send + 'static,
     {
         Error::new(Self { code: 500, message, source: Some(Box::new(source)) })
     }
 
-    pub fn create_with_full<E>(code: u32, message: String, source: E) -> Error
+    pub fn new_with_full<E>(code: u32, message: String, source: E) -> Error
     where
         E: StdError + Sync + Send + 'static,
     {
         Error::new(Self { code, message, source: Some(Box::new(source)) })
     }
 
-    pub fn result<T>(message: String) -> anyhow::Result<T> {
-        Err(Self::create(message))
-    }
-
-    pub fn result_with_code<T>(code: u32, message: String) -> anyhow::Result<T> {
-        Err(Self::create_with_code(code, message))
-    }
-
-    pub fn result_with_source<T, E>(message: String, source: E) -> anyhow::Result<T>
-    where
-        E: StdError + Sync + Send + 'static,
-    {
-        Err(Self::create_with_source(message, source))
-    }
-
-    pub fn result_with_full<T, E>(code: u32, message: String, source: E) -> anyhow::Result<T>
-    where
-        E: StdError + Sync + Send + 'static,
-    {
-        Err(Self::create_with_full(code, message, source))
-    }
 }
 
 impl StdError for HttpError {
@@ -66,11 +45,13 @@ impl StdError for HttpError {
 
 impl Display for HttpError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "code = {}, message = {}",
+                self.code, self.message)?;
+
         if let Some(source) = &self.source {
-            write!(formatter, "code = {}, message = {}, source = {:?}",
-                self.code, self.message, source)
-        } else {
-            write!(formatter, "code = {}, message = {}", self.code, self.message)
+            write!(formatter, ", source = {source:?}")?;
         }
+
+        Ok(())
     }
 }

@@ -1,4 +1,3 @@
-use compact_str::CompactString;
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, header::HeaderValue};
 
@@ -25,16 +24,19 @@ impl HttpMiddleware for AccessLog {
         let ip = ctx.remote_ip();
         let id = ctx.id;
         let method = ctx.req.method().clone();
-        let path = CompactString::new(ctx.req.uri().path());
+        let path = String::from(ctx.req.uri().path());
         log_debug!(id, "{method} \x1b[33m{path}\x1b[0m");
 
         // 记录请求参数日志
-        if log::log_enabled!(log::Level::Trace) {
+        if log::log_enabled!(log::Level::Debug) {
             if let Some(query) = ctx.req.uri().query() {
                 if !query.is_empty() {
-                    log_trace!(id, "[QUERY] {query}");
+                    log_debug!(id, "[QUERY] {query}");
                 }
             }
+        }
+        // 记录请求头
+        if log::log_enabled!(log::Level::Trace) {
             let mut buf = String::with_capacity(512);
             for header in ctx.req.headers() {
                 buf.push_str("\n\t");
@@ -43,13 +45,15 @@ impl HttpMiddleware for AccessLog {
                 buf.push_str(std::str::from_utf8(header.1.as_bytes()).unwrap());
             }
             log_trace!(id, "[HEADER] ->{buf}");
-
+        }
+        // 记录body
+        if log::log_enabled!(log::Level::Debug) {
             if let Some(ct) = ctx.req.headers().get(CONTENT_TYPE) {
                 let ct = ct.as_bytes();
                 if ct.starts_with(b"application/json")
                     || ct.starts_with(b"application/x-www-form-urlencoded")
                 {
-                    log_trace!(id, "[BODY] {}", std::str::from_utf8(&ctx.body).unwrap());
+                    log_debug!(id, "[BODY] {}", std::str::from_utf8(&ctx.body).unwrap());
                 }
             }
         }
@@ -97,6 +101,7 @@ impl HttpMiddleware for CorsMiddleware {
 
         let is_options = ctx.req.method() == hyper::Method::OPTIONS;
         let allow_host = HeaderValue::from_str("*").unwrap();
+        // options请求，无需处理，直接返回
         if is_options {
             Ok(
                 hyper::Response::builder()

@@ -1,4 +1,3 @@
-use compact_str::CompactString;
 use cookie::Cookie;
 use httpserver::{log_debug, log_trace, log_warn, HttpContext, HttpResponse, Next};
 use hyper::http::HeaderValue;
@@ -18,8 +17,8 @@ pub const LOGOUT_KEY: &str = "logout";
 type Cache<K, V> = mini_moka::sync::Cache<K, V>;
 
 pub struct Authentication {
-    key: CompactString,
-    iss: CompactString,
+    key: String,
+    iss: String,
     token_cache: Cache<String, Arc<Value>>,
 }
 
@@ -33,8 +32,8 @@ impl Authentication {
     ///
     pub fn new(key: &str, issuer: &str, cache_size: u64, cache_ttl: u32) -> Self {
         Authentication {
-            key: CompactString::new(key),
-            iss: CompactString::new(issuer),
+            key: String::from(key),
+            iss: String::from(issuer),
             token_cache: mini_moka::sync::Cache::builder()
                 .max_capacity(cache_size)
                 .time_to_live(Duration::from_secs(cache_ttl as u64))

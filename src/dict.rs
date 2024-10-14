@@ -1,28 +1,25 @@
 use anyhow_ext::{Result, Context};
 use appcfg::Config;
-// use arc_swap::ArcSwapOption;
-use compact_str::CompactString;
+use arc_swap::ArcSwapOption;
 use qp_trie::{wrapper::BString, Trie};
 use serde::Serialize;
 use triomphe::Arc;
 
 pub type DictItems = Vec<DictItem>;
-type DictValue = Arc<CompactString>;
+type DictValue = Arc<String>;
 type DictData = Trie<BString, DictValue>;
 
-// static DICT_MAP: ArcSwapOption<DictData> = ArcSwapOption::const_empty();
-static mut DICT_MAP: Option<Arc<DictData>> = None;
+static DICT_MAP: ArcSwapOption<DictData> = ArcSwapOption::const_empty();
 
 #[derive(Serialize, Clone)]
 pub struct DictItem {
-    pub key: CompactString,
+    pub key: String,
     pub value: DictValue,
 }
 
 pub fn query(key_prefix: &str) -> Option<DictItems> {
-    // let dict_data = DICT_MAP.load();
-    // let dict_data = match dict_data.as_ref() {
-    let dict_data = match unsafe { &DICT_MAP } {
+    let dict_data = DICT_MAP.load();
+    let dict_data = match dict_data.as_ref() {
         Some(v) => v.clone(),
         None => {
             log::warn!("config data is None");
@@ -48,19 +45,18 @@ pub fn load(filename: &str) -> Result<()> {
     let mut dict_data = DictData::new();
 
     for (key, value) in cfg.iter() {
-        dict_data.insert_str(key, Arc::new(CompactString::new(value)));
+        dict_data.insert_str(key, Arc::new(String::from(value)));
     }
 
-    // DICT_MAP.store(Some(std::sync::Arc::new(dict_data)));
-    unsafe { DICT_MAP = Some(Arc::new(dict_data)); }
+    DICT_MAP.store(Some(std::sync::Arc::new(dict_data)));
 
     Ok(())
 }
 
 impl DictItem {
-    pub fn new(key: &str, value: Arc<CompactString>) -> Self {
+    pub fn new(key: &str, value: Arc<String>) -> Self {
         DictItem {
-            key: CompactString::new(key),
+            key: String::from(key),
             value,
         }
     }

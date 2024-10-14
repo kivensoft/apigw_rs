@@ -1,25 +1,27 @@
 [package]
 name = "httpserver"
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 authors = ["kiven <kivensoft@gmail.com>"]
 description = "A simple, asynchronous log library"
 
 [features]
 english = []
+websocket = ["hyper-tungstenite"]
 
 [dependencies]
 tokio = { version = "1", features = ["macros", "net", "sync", "parking_lot", "rt-multi-thread"] }
 hyper = { version = "1", features = [ "http1", "server" ] }
 hyper-util = { version = "0.1", features = [ "server", "http1", "tokio" ] }
 http-body-util = "0.1"
+http = "1"
 form_urlencoded = "1"
 urlencoding = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
-compact_str = { version = "0.7", features = ["serde", "bytes"] }
 gjson = "0.8"
 anyhow = "1"
 log = "0.4"
 async-trait = "0.1"
 itoa = "1"
+hyper-tungstenite = { version = "0.15", optional = true }

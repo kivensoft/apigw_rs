@@ -1,19 +1,23 @@
 //! 网关应用提供的服务接口
+use std::{sync::Arc, time::Duration};
+
 use crate::{
-    auth, dict, proxy::{self, ServiceGroup}, redis, AppConf, AppGlobal
+    auth, dict, proxy::{self, ServiceGroup}, ratelimit::RateLimiterMiddleware,
+    redis, staticmut::StaticMut, AppConf, AppGlobal
 };
-use compact_str::{format_compact, CompactString};
 use httpserver::{http_bail, http_error, log_error, log_info, HttpContext, HttpResponse, Resp};
 use localtime::LocalTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub static mut RATE_LIMITER: StaticMut<Arc<RateLimiterMiddleware>> = StaticMut::new();
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RegRequest {
-    endpoint: CompactString,
-    path: Option<CompactString>,
-    paths: Option<Vec<CompactString>>,
+    endpoint: String,
+    path: Option<String>,
+    paths: Option<Vec<String>>,
 }
 
 /// 服务测试，测试服务是否存活
@@ -21,23 +25,23 @@ pub async fn ping(ctx: HttpContext) -> HttpResponse {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Res {
-        reply: CompactString,
+        reply: String,
         now: LocalTime,
-        server: CompactString,
-        ip: CompactString,
+        server: String,
+        ip: String,
     }
 
-    let ip: CompactString = format_compact!("{}", ctx.addr);
+    let ip = format!("{}", ctx.addr);
     log_info!(ctx.id, "ping from: {}", ip);
 
     let reply = ctx.get_param_from_multi("reply", Some(0))
-        .map(CompactString::new)
-        .unwrap_or(CompactString::new("pong"));
+        .map(String::from)
+        .unwrap_or(String::from("pong"));
 
     Resp::ok(&Res {
         reply,
         now: LocalTime::now(),
-        server: format_compact!("{}/{}", crate::APP_NAME, crate::APP_VER),
+        server: format!("{}/{}", crate::APP_NAME, crate::APP_VER),
         ip,
     })
 }
@@ -79,7 +83,7 @@ pub async fn blacklist(ctx: HttpContext) -> HttpResponse {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Req {
-        token: CompactString,
+        token: String,
     }
 
     let ac = AppConf::get();
@@ -97,7 +101,7 @@ pub async fn blacklist(ctx: HttpContext) -> HttpResponse {
 
     let now = localtime::LocalTime::now();
     let sign = jwt::get_sign(&param.token).ok_or_else(|| http_error!("Invalid Token"))?;
-    let key = format_compact!("{}:{}:{}", ac.redis_prefix, auth::LOGOUT_KEY, sign);
+    let key = format!("{}:{}:{}", ac.redis_prefix, auth::LOGOUT_KEY, sign);
     let ttl = AppGlobal::get().redis_ttl as u32;
 
     redis::set(&key, &now.to_string(), ttl).await?;
@@ -129,14 +133,14 @@ pub async fn query(ctx: HttpContext) -> HttpResponse {
     #[derive(Deserialize, Default)]
     #[serde(rename_all = "camelCase")]
     struct Req {
-        path: Option<CompactString>,
-        paths: Option<Vec<CompactString>>,
+        path: Option<String>,
+        paths: Option<Vec<String>>,
     }
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct SvrInfoItem {
-        path: CompactString,
+        path: String,
         services: Vec<proxy::ServiceItem>,
     }
 
@@ -144,7 +148,7 @@ pub async fn query(ctx: HttpContext) -> HttpResponse {
     #[serde(rename_all = "camelCase")]
     struct Res {
         #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<CompactString>,
+        path: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         services: Option<Vec<proxy::ServiceItem>>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,7 +160,7 @@ pub async fn query(ctx: HttpContext) -> HttpResponse {
     // body中没有，尝试从路径中读取
     if param.path.is_none() {
         if let Some(s) = ctx.get_path_param(0) {
-            param.path = Some(CompactString::new(s));
+            param.path = Some(String::from(s));
         }
     }
 
@@ -197,14 +201,7 @@ pub async fn query(ctx: HttpContext) -> HttpResponse {
 pub async fn reg(ctx: HttpContext) -> HttpResponse {
     type Req = RegRequest;
 
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Res {
-        endpoint: CompactString,
-    }
-
     let param = ctx.parse_json::<Req>()?;
-
     if param.path.is_none() && param.paths.is_none() {
         return Resp::fail("param path and paths not find");
     }
@@ -270,8 +267,8 @@ pub async fn cfg(ctx: HttpContext) -> HttpResponse {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Req {
-        key: Option<CompactString>,
-        keys: Option<Vec<CompactString>>,
+        key: Option<String>,
+        keys: Option<Vec<String>>,
     }
 
     #[derive(Serialize)]
@@ -288,7 +285,7 @@ pub async fn cfg(ctx: HttpContext) -> HttpResponse {
 
     if param.key.is_none() {
         if let Some(key) = ctx.get_path_param(0) {
-            param.key = Some(CompactString::new(key));
+            param.key = Some(String::from(key));
         }
     }
 
@@ -322,4 +319,47 @@ pub async fn recfg(ctx: HttpContext) -> HttpResponse {
         log_error!(ctx.id, "reload dict-file error: arg dict-file is no specified");
         Resp::fail("arg dict-file no specified")
     }
+}
+
+/// 设置接口限流，rate为毫秒为单位的令牌产生速率，例如1000表示每秒产生1个令牌
+/// rate为0时，表示删除该限流器
+pub async fn rate(ctx: HttpContext) -> HttpResponse {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Req {
+        path: String,
+        rate: u64,
+    }
+
+    let param = ctx.parse_json::<Req>()?;
+
+    let rate_limiter = unsafe { RATE_LIMITER.get() };
+    if param.rate == 0 {
+        rate_limiter.delete(&param.path);
+    } else {
+        rate_limiter.insert(param.path, Duration::from_millis(param.rate));
+    }
+
+    Resp::ok_with_empty()
+}
+
+/// 查询所有限流器
+pub async fn rates(_ctx: HttpContext) -> HttpResponse {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ResItem {
+        path: String,
+        rate: u64,
+    }
+    type Res = Vec<ResItem>;
+
+    let map = unsafe { RATE_LIMITER.get().get() };
+    let res: Res = map.iter()
+        .map(|item| ResItem {
+            path: item.key().clone(),
+            rate: item.value().rate.as_millis() as u64,
+        })
+        .collect();
+
+    Resp::ok(&res)
 }

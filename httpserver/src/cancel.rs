@@ -40,10 +40,12 @@ impl CancelSender {
         self.sender.send(true)
     }
 
-    pub async fn wait(&self) {
+    /// 等待直到取消完成或超时
+    pub async fn wait(&self, wait_seconds: Duration) {
         let tick = Duration::from_millis(100);
         let mut count = 0;
-        while self.count.load(Ordering::Acquire) != 0 && count < 100 {
+        let max_count = wait_seconds.as_secs();
+        while self.count.load(Ordering::Acquire) != 0 && count < max_count {
             tokio::time::sleep(tick).await;
             count += 1;
             if count % 10 == 0 {
@@ -52,12 +54,14 @@ impl CancelSender {
         }
     }
 
-    pub async fn cancel_and_wait(&self) -> Result<(), SendError<bool>> {
+    /// 取消任务并等待任务结束或超时
+    pub async fn cancel_and_wait(&self, wait_seconds: Duration) -> Result<(), SendError<bool>> {
         self.cancel()?;
-        self.wait().await;
+        self.wait(wait_seconds).await;
         Ok(())
     }
 
+    /// 返回当前任务数
     pub fn count(&self) -> u32 {
         self.count.load(Ordering::Acquire)
     }
