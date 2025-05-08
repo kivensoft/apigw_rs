@@ -173,33 +173,3 @@ macro_rules! if_expr {
         }
     };
 }
-
-#[macro_export]
-macro_rules! log_trace {
-    (target: $target:expr, $reqid:expr, $($arg:tt)+) => (log::trace!(target: $target, "[http-req:{}] {}", $reqid, format_args!($($arg)+)));
-    ($reqid:expr, $($arg:tt)+) => (log::trace!("[http-req:{}] {}", $reqid, format_args!($($arg)+)))
-}
-
-#[macro_export]
-macro_rules! log_debug {
-    (target: $target:expr, $reqid:expr, $($arg:tt)+) => (log::debug!(target: $target, "[http-req:{}] {}", $reqid, format_args!($($arg)+)));
-    ($reqid:expr, $($arg:tt)+) => (log::debug!("[http-req:{}] {}", $reqid, format_args!($($arg)+)))
-}
-
-#[macro_export]
-macro_rules! log_info {
-    (target: $target:expr, $reqid:expr, $($arg:tt)+) => (log::info!(target: $target, "[http-req:{}] {}", $reqid, format_args!($($arg)+)));
-    ($reqid:expr, $($arg:tt)+) => (log::info!("[http-req:{}] {}", $reqid, format_args!($($arg)+)))
-}
-
-#[macro_export]
-macro_rules! log_warn {
-    (target: $target:expr, $reqid:expr, $($arg:tt)+) => (log::warn!(target: $target, "[http-req:{}] {}", $reqid, format_args!($($arg)+)));
-    ($reqid:expr, $($arg:tt)+) => (log::warn!("[http-req:{}] {}", $reqid, format_args!($($arg)+)))
-}
-
-#[macro_export]
-macro_rules! log_error {
-    (target: $target:expr, $reqid:expr, $($arg:tt)+) => (log::error!(target: $target, "[http-req:{}] {}", $reqid, format_args!($($arg)+)));
-    ($reqid:expr, $($arg:tt)+) => (log::error!("[http-req:{}] {}", $reqid, format_args!($($arg)+)))
-}

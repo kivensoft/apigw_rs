@@ -11,27 +11,42 @@ pub struct HttpError {
 
 impl HttpError {
     pub fn new(message: String) -> Error {
-        Error::new(Self { code: 500, message, source: None })
+        Error::new(Self {
+            code: 500,
+            message,
+            source: None,
+        })
     }
 
-    pub fn new_with_code(code: u32, message: String, ) -> Error {
-        Error::new(Self { code, message, source: None })
+    pub fn new_with_code(code: u32, message: String) -> Error {
+        Error::new(Self {
+            code,
+            message,
+            source: None,
+        })
     }
 
     pub fn new_with_source<E>(message: String, source: E) -> Error
     where
         E: StdError + Sync + Send + 'static,
     {
-        Error::new(Self { code: 500, message, source: Some(Box::new(source)) })
+        Error::new(Self {
+            code: 500,
+            message,
+            source: Some(Box::new(source)),
+        })
     }
 
     pub fn new_with_full<E>(code: u32, message: String, source: E) -> Error
     where
         E: StdError + Sync + Send + 'static,
     {
-        Error::new(Self { code, message, source: Some(Box::new(source)) })
+        Error::new(Self {
+            code,
+            message,
+            source: Some(Box::new(source)),
+        })
     }
-
 }
 
 impl StdError for HttpError {
@@ -45,8 +60,7 @@ impl StdError for HttpError {
 
 impl Display for HttpError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(formatter, "code = {}, message = {}",
-                self.code, self.message)?;
+        write!(formatter, "code = {}, message = {}", self.code, self.message)?;
 
         if let Some(source) = &self.source {
             write!(formatter, ", source = {source:?}")?;

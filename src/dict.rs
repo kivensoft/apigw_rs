@@ -1,15 +1,15 @@
-use anyhow_ext::{Result, Context};
+use std::sync::{Arc, OnceLock};
+
+use anyhow::{Context, Result, bail};
 use appcfg::Config;
-use arc_swap::ArcSwapOption;
-use qp_trie::{wrapper::BString, Trie};
+use qp_trie::{Trie, wrapper::BString};
 use serde::Serialize;
-use triomphe::Arc;
+
+use crate::efmt;
 
 pub type DictItems = Vec<DictItem>;
 type DictValue = Arc<String>;
 type DictData = Trie<BString, DictValue>;
-
-static DICT_MAP: ArcSwapOption<DictData> = ArcSwapOption::const_empty();
 
 #[derive(Serialize, Clone)]
 pub struct DictItem {
@@ -17,12 +17,15 @@ pub struct DictItem {
     pub value: DictValue,
 }
 
+
+static DICT_MAP: OnceLock<Arc<DictData>> = OnceLock::new();
+
+
 pub fn query(key_prefix: &str) -> Option<DictItems> {
-    let dict_data = DICT_MAP.load();
-    let dict_data = match dict_data.as_ref() {
+    let dict_data = match DICT_MAP.get() {
         Some(v) => v.clone(),
         None => {
-            log::warn!("config data is None");
+            log::error!("dict.rs::DICT_MAP not initialized");
             return None;
         }
     };
@@ -32,25 +35,24 @@ pub fn query(key_prefix: &str) -> Option<DictItems> {
         .map(|(k, v)| DictItem::new(k.as_str(), v.clone()))
         .collect();
 
-    if !items.is_empty() {
-        Some(items)
-    } else {
-        None
-    }
+    if !items.is_empty() { Some(items) } else { None }
 }
 
 pub fn load(filename: &str) -> Result<()> {
     // 将文件中的键值对，转换到map
-    let cfg = Config::with_file(filename).with_context(|| format!("load {} fail", filename))?;
+    let cfg = Config::with_file(filename)
+        .with_context(|| format!("load {} fail", filename))
+        .with_context(|| efmt!("load dict fail"))?;
     let mut dict_data = DictData::new();
 
     for (key, value) in cfg.iter() {
         dict_data.insert_str(key, Arc::new(String::from(value)));
     }
 
-    DICT_MAP.store(Some(std::sync::Arc::new(dict_data)));
-
-    Ok(())
+    match DICT_MAP.set(Arc::new(dict_data)) {
+        Ok(_) => Ok(()),
+        Err(_) => bail!("dict.rs, The variable has already been initialized"),
+    }
 }
 
 impl DictItem {

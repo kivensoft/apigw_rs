@@ -1,7 +1,14 @@
-use std::{sync::{atomic::{AtomicBool, AtomicU32, Ordering}, Arc}, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
-use tokio::sync::watch::{error::{RecvError, SendError}, Receiver, Sender};
+use tokio::sync::watch::{Receiver, Sender};
 
+#[derive(Debug)]
 pub struct CancelSender {
     sender: Sender<bool>,
     count: Arc<AtomicU32>,
@@ -16,7 +23,6 @@ pub struct CancelManager {
 pub struct CancelReceiver {
     receiver: Receiver<bool>,
     count: Arc<AtomicU32>,
-    finished: AtomicBool,
 }
 
 pub fn new_cancel() -> (CancelSender, CancelManager) {
@@ -27,38 +33,46 @@ pub fn new_cancel() -> (CancelSender, CancelManager) {
             sender,
             count: count.clone(),
         },
-        CancelManager {
-            receiver,
-            count,
-        },
+        CancelManager { receiver, count },
     )
 }
 
 impl CancelSender {
-    pub fn cancel(&self) -> Result<(), SendError<bool>> {
-        // self.count.fetch_sub(1, Ordering::Release);
-        self.sender.send(true)
-    }
-
-    /// 等待直到取消完成或超时
-    pub async fn wait(&self, wait_seconds: Duration) {
-        let tick = Duration::from_millis(100);
-        let mut count = 0;
-        let max_count = wait_seconds.as_secs();
-        while self.count.load(Ordering::Acquire) != 0 && count < max_count {
-            tokio::time::sleep(tick).await;
-            count += 1;
-            if count % 10 == 0 {
-                println!("wait {}s ...", count / 10);
-            }
-        }
-    }
-
     /// 取消任务并等待任务结束或超时
-    pub async fn cancel_and_wait(&self, wait_seconds: Duration) -> Result<(), SendError<bool>> {
-        self.cancel()?;
-        self.wait(wait_seconds).await;
-        Ok(())
+    pub async fn cancel(&self, wait_seconds: Duration) {
+        const TICK_MS: u64 = 50;
+        const SEC_COUNT: u64 = 1000 / TICK_MS;
+
+        // 发送退出信号，如果没有等待结束的任务，直接返回
+        if self.sender.send(true).is_err() {
+            return;
+        }
+
+        // 等待结束时间为0，直接返回
+        let wait_seconds = wait_seconds.as_secs();
+        if wait_seconds == 0 {
+            return;
+        }
+
+        let mut tick_count = 0;
+        let max_count = wait_seconds * SEC_COUNT;
+        let tick = Duration::from_millis(TICK_MS);
+        let mut wait_count = self.count.load(Ordering::Relaxed);
+
+        // 等待直至剩余任务为0或者超时
+        while wait_count != 0 && tick_count < max_count {
+            tokio::time::sleep(tick).await;
+            tick_count += 1;
+            // 等待整秒时输出调试日志
+            if log::log_enabled!(log::Level::Trace) && tick_count % SEC_COUNT == 0 {
+                let secs = tick_count / SEC_COUNT;
+                println!("waiting {secs}s for {wait_count} tasks ...");
+            }
+            wait_count = self.count.load(Ordering::Relaxed);
+        }
+
+        // 再次发送退出信号，通知所有任务强制退出
+        let _ = self.sender.send(true);
     }
 
     /// 返回当前任务数
@@ -72,7 +86,7 @@ impl CancelManager {
         *self.receiver.borrow()
     }
 
-    pub fn new_task_cancel(&self) -> CancelReceiver {
+    pub fn new_cancel_receiver(&self) -> CancelReceiver {
         CancelReceiver::new(self.receiver.clone(), self.count.clone())
     }
 
@@ -83,24 +97,18 @@ impl CancelManager {
 
 impl CancelReceiver {
     fn new(receiver: Receiver<bool>, count: Arc<AtomicU32>) -> Self {
-        count.fetch_add(1, Ordering::Acquire);
-        CancelReceiver {
-            receiver,
-            count,
-            finished: AtomicBool::new(false),
-        }
+        count.fetch_add(1, Ordering::Relaxed);
+        CancelReceiver { receiver, count }
     }
 
-    /// 等待接收取消任务事件
-    pub async fn cancelled(&mut self) -> Result<(), RecvError> {
-        self.receiver.changed().await
+    /// 等待接收取消任务事件, 返回true表示发生取消事件，返回false表示sender对象已销毁
+    pub async fn cancel_event(&mut self) -> bool {
+        self.receiver.changed().await.is_ok()
     }
 
-    /// 标志异步任务已经结束
-    pub fn finish(&self) {
-        if self.finished.compare_exchange(false, true, Ordering::Release, Ordering::Relaxed).is_ok() {
-            self.count.fetch_sub(1, Ordering::Release);
-        }
+    /// 标志异步任务已经结束，返回剩余任务数
+    pub fn finish(&self) -> u32 {
+        self.count.fetch_sub(1, Ordering::Release) - 1
     }
 
     /// 当前任务是否已被取消

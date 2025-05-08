@@ -1,9 +1,19 @@
 //! 简单的redis客户端
-use anyhow_ext::Result;
-use redis_async::{client::{ConnectionBuilder, PairedConnection}, resp_array};
+use anyhow::Result;
+use redis_async::{
+    client::{ConnectionBuilder, PairedConnection},
+    resp::{FromResp, RespValue},
+    resp_array,
+};
 
-use crate::staticmut::StaticMut;
+use crate::statics::StaticVal;
 
+macro_rules! ra {
+    // 直接转发到 resp_array!
+    ($($arg:tt)*) => {
+        resp_array!($($arg)*)
+    };
+}
 
 pub struct RedisConfig<'a> {
     pub host: &'a str,
@@ -13,13 +23,18 @@ pub struct RedisConfig<'a> {
     pub db: &'a str,
 }
 
+struct GlobalVal {
+    conn: PairedConnection,
+    expire_secs: u32,
+}
 
-// static CONN: OnceLock<PairedConnection> = OnceLock::new();
-static mut CONN: StaticMut<PairedConnection> = StaticMut::new();
 
-pub async fn init(cfg: &RedisConfig<'_>) -> Result<()> {
+static GLOBAL_VAL: StaticVal<GlobalVal> = StaticVal::new();
+
+
+pub async fn init(cfg: &RedisConfig<'_>, expire_secs: u32) -> Result<()> {
     let port = cfg.port.parse::<u16>().unwrap_or(6379);
-    let db = cfg.db.parse::<usize>().unwrap_or(0);
+    // let db = cfg.db.parse::<usize>().unwrap_or(0);
 
     let mut builder = ConnectionBuilder::new(cfg.host, port)?;
     if !cfg.user.is_empty() {
@@ -30,30 +45,51 @@ pub async fn init(cfg: &RedisConfig<'_>) -> Result<()> {
     }
 
     let conn = builder.paired_connect().await?;
-    if !cfg.db.is_empty() {
-        conn.send(resp_array!["SELECT", db]).await?;
-    }
-    conn.send::<String>(resp_array!["PING"]).await?;
+    // if !cfg.db.is_empty() {
+    //     let param = ra!["SELECT", db];
+    //     conn.send::<()>(param).await?;
+    // }
 
-    unsafe { CONN.init(conn); }
+    GLOBAL_VAL.init(GlobalVal { conn, expire_secs });
+    send::<()>("PING".into()).await?;
 
     Ok(())
 }
 
 pub async fn get(key: &str) -> Result<Option<String>> {
-    Ok(get_conn().send(resp_array!["GET", key]).await?)
+    send(ra!["GET", key]).await
 }
 
-pub async fn set(key: &str, value: &str, ttl: u32) -> Result<()> {
-    let mut buf = itoa::Buffer::new();
-    let ttl_str = buf.format(ttl);
-    Ok(get_conn().send(resp_array!["SETEX", key, ttl_str, value]).await?)
+pub async fn set(key: &str, value: &str) -> Result<()> {
+    setex(key, value, GLOBAL_VAL.get().expire_secs).await
 }
 
-pub async fn del(key: &str) -> Result<usize> {
-    Ok(get_conn().send(resp_array!["DEL", key]).await?)
+pub async fn setex(key: &str, value: &str, expire_secs: u32) -> Result<()> {
+    let cmd = ra!["SETEX", key, expire_secs as usize, value];
+    send(cmd).await
 }
 
-fn get_conn() -> &'static PairedConnection {
-    unsafe { CONN.get() }
+pub async fn del(key: &str) -> Result<bool> {
+    send::<usize>(ra!["DEL", key]).await.map(|v| v == 1)
+}
+
+pub async fn expire(key: &str, expire_secs: u32) -> Result<bool> {
+    let cmd = ra!["EXPIRE", key, expire_secs as usize];
+    send::<usize>(cmd).await.map(|v| v == 1)
+}
+
+pub async fn ttl(key: &str) -> Result<i64> {
+    send(ra!["TTL", key]).await
+}
+
+pub async fn incr(key: &str) -> Result<i64> {
+    send(ra!["INCR", key]).await
+}
+
+async fn send<T: FromResp + Unpin>(resp: RespValue) -> Result<T> {
+    Ok(GLOBAL_VAL.get().conn.send(resp).await?)
+}
+
+fn send_and_forget(resp: RespValue) {
+    GLOBAL_VAL.get().conn.send_and_forget(resp)
 }

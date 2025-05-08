@@ -60,7 +60,12 @@ pub fn install() {
     std::fs::write(&path, content).unwrap();
 
     let path_str = path.to_str().unwrap();
-    println!("Generating service configuration file \"{}\" is complete.", path_str);
-    println!("Please use \"systemctl start {}\" to start the service", prog_noext);
-
+    println!(
+        "Generating service configuration file \"{}\" is complete.",
+        path_str
+    );
+    println!(
+        "Please use \"systemctl start {}\" to start the service",
+        prog_noext
+    );
 }

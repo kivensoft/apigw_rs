@@ -1,13 +1,15 @@
 [package]
 name = "httpserver"
-version = "1.0.8"
+version = "1.0.9"
 edition = "2021"
 authors = ["kiven <kivensoft@gmail.com>"]
 description = "A simple, asynchronous log library"
 
 [features]
+default = ["sse"]
 english = []
 websocket = ["hyper-tungstenite"]
+sse = []
 
 [dependencies]
 tokio = { version = "1", features = ["macros", "net", "sync", "parking_lot", "rt-multi-thread"] }
@@ -24,4 +26,7 @@ anyhow = "1"
 log = "0.4"
 async-trait = "0.1"
 itoa = "1"
-hyper-tungstenite = { version = "0.15", optional = true }
+parking_lot = "0.12"
+compact_str = { version = "0.9", features = ["serde", "bytes"] } # 短字符串存储在栈中的string替代品
+tokio-stream = "0.1" # 扩展tokio的stream功能的库，用于实现sse功能
+hyper-tungstenite = { version = "0.17", optional = true }

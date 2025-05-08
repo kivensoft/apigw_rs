@@ -1,16 +1,25 @@
-mod auth;
 mod apis;
+mod appvars;
+mod auth;
+#[allow(dead_code)]
+mod db;
 mod dict;
-mod ratelimit;
+mod macros;
 mod proxy;
+mod ratelimit;
+#[allow(dead_code)]
 mod redis;
-mod staticmut;
+mod statics;
 mod syssrv;
 
-use std::{fmt::Write, time::Duration};
+use std::{
+    env, fmt::Write, sync::{Arc, OnceLock}, time::Duration
+};
 
-use anyhow_ext::Context;
-use httpserver::HttpServer;
+use anyhow::{Context, Result};
+use appvars::AppVar;
+use httpserver::{CancelSender, HttpServer};
+use smallstr::SmallString;
 
 const BANNER: &str = r#"
     ___          _    ______      __  Kivensoft ?
@@ -25,62 +34,60 @@ pub const APP_NAME: &str = include_str!(concat!(env!("OUT_DIR"), "/.app_name"));
 /// app版本号, 来自编译时由build.rs从cargo.toml中读取的版本号(读取内容写入.version文件)
 const APP_VER: &str = include_str!(concat!(env!("OUT_DIR"), "/.version"));
 
-appcfg::appglobal_define!(app_global, AppGlobal,
-    heart_break_live_time: u32,
-    redis_ttl            : u64,
-    startup_time         : u64,
-);
+static CANCEL_SENDER: OnceLock<CancelSender> = OnceLock::new();
 
 appcfg::appconfig_define!(app_conf, AppConf,
-    log_level   : String => ["L",  "log-level",    "LogLevel",          "log level(trace/debug/info/warn/error/off)"],
-    log_file    : String => ["F",  "log-file",     "LogFile",           "log filename"],
-    log_max     : String => ["M",  "log-max",      "LogFileMaxSize",    "log file max size (unit: k/m/g)"],
-    no_console  : bool   => ["",   "no-console",   "NoConsole",         "prohibit outputting logs to the console"],
-    install     : bool   => ["",   "install",      "InstallService",    "install as a system Linux service"],
-    listen      : String => ["l",  "listen",       "HttpServiceListen", "http service ip:port"],
-    dict_file   : String => ["d",  "dict-file",    "DictConfigFile",    "set dict config file"],
-    threads     : String => ["t",  "threads",      "RuntimeThreads",    "set tokio runtime worker threads"],
-    mtcs        : String => ["",   "mtcs",         "MaxTokenCacheSize", "max token cache size"],
-    context_path: String => ["",   "context-path", "HttpContextPath",   "http request content path"],
-    gw_prefix   : String => ["",   "gw-prefix",    "GatewayPathPrefix", "Gateway path prefix"],
-    api_expire  : String => ["",   "api-expire",   "ApiExpire",         "api service expire time (unit: seconds)"],
-    conn_timeout: String => ["",   "conn-timeout", "ConnectTimeout",    "service connect timeout (unit: seconds)"],
-    jwt_issuer  : String => ["i",  "jwt-issuer",   "JwtIssuer",         "jwt token issuer, when this value is set, the iss of token will be verified"],
-    jwt_key     : String => ["k",  "jwt-key",      "JwtKey",            "jwt token key, when this value if set, proxy will add header X-Token-Verified true or false"],
-    redis_host  : String => ["H",  "redis-host",   "RedisHost",         "redis host, if set, redis will be used"],
-    redis_port  : String => ["",   "redis-port",   "RedisPort",         "redis port"],
-    redis_user  : String => ["",   "redis-user",   "RedisUser",         "redis username"],
-    redis_pass  : String => ["P",  "redis-pass",   "RedisPass",         "redis password"],
-    redis_db    : String => ["",   "redis-db",     "RedisDb",           "redis database"],
-    redis_prefix: String => ["R",  "redis-prefix", "RedisPrefix",       "redis key common prefix"],
-    redis_ttl   : String => ["",   "redis-ttl",    "RedisTtl",          "redis cache ttl"],
+    log_level     : String => ["L",  "log-level",    "LogLevel",          "log level(trace/debug/info/warn/error/off)"],
+    log_file      : String => ["F",  "log-file",     "LogFile",           "log filename"],
+    log_max       : String => ["M",  "log-max",      "LogFileMaxSize",    "log file max size (unit: k/m/g)"],
+    no_console    : bool   => ["",   "no-console",   "NoConsole",         "prohibit outputting logs to the console"],
+    install       : bool   => ["",   "install",      "InstallService",    "install as a system Linux service"],
+    listen        : String => ["l",  "listen",       "HttpServiceListen", "http service ip:port"],
+    dict_file     : String => ["d",  "dict-file",    "DictConfigFile",    "set dict config file"],
+    threads       : String => ["t",  "threads",      "RuntimeThreads",    "set tokio runtime worker threads"],
+    token_db      : String => ["",   "token-db",     "TokenDB",           "set invalid token db path"],
+    mtcs          : String => ["",   "mtcs",         "MaxTokenCacheSize", "max token cache size"],
+    context_path  : String => ["",   "context-path", "HttpContextPath",   "http request content path"],
+    gw_prefix     : String => ["",   "gw-prefix",    "GatewayPathPrefix", "Gateway path prefix"],
+    api_expire    : String => ["",   "api-expire",   "ApiExpire",         "api service expire time (unit: seconds)"],
+    conn_timeout  : String => ["",   "conn-timeout", "ConnectTimeout",    "service connect timeout (unit: seconds)"],
+    jwt_issuer    : String => ["i",  "jwt-issuer",   "JwtIssuer",         "jwt token issuer, when this value is set, the iss of token will be verified"],
+    jwt_key       : String => ["k",  "jwt-key",      "JwtKey",            "jwt token key, when this value if set, proxy will add header X-Token-Verified true or false"],
+    redis_host    : String => ["H",  "redis-host",   "RedisHost",         "redis host, if set, redis will be used"],
+    redis_port    : String => ["",   "redis-port",   "RedisPort",         "redis port"],
+    redis_user    : String => ["",   "redis-user",   "RedisUser",         "redis username"],
+    redis_pass    : String => ["P",  "redis-pass",   "RedisPass",         "redis password"],
+    redis_db      : String => ["",   "redis-db",     "RedisDb",           "redis database"],
+    redis_prefix  : String => ["R",  "redis-prefix", "RedisPrefix",       "redis key common prefix"],
+    redis_ttl     : String => ["",   "redis-ttl",    "RedisTtl",          "redis cache ttl"],
 );
 
 impl Default for AppConf {
     fn default() -> Self {
         Self {
-            log_level   : String::from("info"),
-            log_file    : String::with_capacity(0),
-            log_max     : String::from("10m"),
-            no_console  : false,
-            install     : false,
-            listen      : String::from("127.0.0.1:6400"),
-            dict_file   : String::with_capacity(0),
-            threads     : String::from("2"),
-            mtcs        : String::from("128"),
+            log_level: String::from("info"),
+            log_file: String::with_capacity(0),
+            log_max: String::from("10m"),
+            no_console: false,
+            install: false,
+            listen: String::from("127.0.0.1:6400"),
+            dict_file: String::with_capacity(0),
+            threads: String::from("2"),
+            token_db: String::from("invalid_token_db"),
+            mtcs: String::from("128"),
             context_path: String::with_capacity(0),
-            gw_prefix   : String::from("/gw"),
-            api_expire  : String::from("90"),
+            gw_prefix: String::from("/gw"),
+            api_expire: String::from("90"),
             conn_timeout: String::from("3"),
-            jwt_issuer  : String::with_capacity(0),
-            jwt_key     : String::with_capacity(0),
-            redis_host  : String::with_capacity(0),
-            redis_port  : String::with_capacity(0),
-            redis_user  : String::with_capacity(0),
-            redis_pass  : String::with_capacity(0),
-            redis_db    : String::with_capacity(0),
+            jwt_issuer: String::with_capacity(0),
+            jwt_key: String::with_capacity(0),
+            redis_host: String::with_capacity(0),
+            redis_port: String::with_capacity(0),
+            redis_user: String::with_capacity(0),
+            redis_pass: String::with_capacity(0),
+            redis_db: String::with_capacity(0),
             redis_prefix: String::from(APP_NAME),
-            redis_ttl   : String::from("300"),
+            redis_ttl: String::from("300"),
         }
     }
 }
@@ -91,38 +98,54 @@ macro_rules! arg_err {
     };
 }
 
-fn init() -> bool {
-    let mut buf = String::with_capacity(512);
+fn get_app_path() -> String {
+    if let Ok(path) =  env::current_exe() {
+        // 获取可执行文件的目录路径
+        if let Some(parent) = path.parent() {
+            if let Some(parent) = parent.to_str() {
+                return parent.to_string();
+            }
+        }
+    }
 
-    write!(buf, "{APP_NAME} version {APP_VER} CopyLeft Kivensoft 2023-2024.").unwrap();
+    log::error!("获取程序的当前路径失败");
+    String::new()
+}
+
+fn parse() -> Option<(AppConf, AppVar)> {
+    let mut buf = SmallString::<[u8; 512]>::new();
+
+    write!(
+        buf,
+        "{APP_NAME} version {APP_VER} CopyLeft Kivensoft 2023-2025."
+    )
+    .unwrap();
     let version = buf.as_str();
 
-    let ac = AppConf::init();
-    if !appcfg::parse_args(ac, version).expect("parse args error") {
-        return false;
+    let mut ac = AppConf::default();
+    if !appcfg::parse_args(&mut ac, version).expect("parse args error") {
+        return None;
     }
 
     if ac.install {
         syssrv::install();
-        return false;
+        return None;
     }
 
-    AppGlobal::init(AppGlobal {
+    let av = AppVar {
+        startup_time: localtime::unix_timestamp(),
         heart_break_live_time: ac.api_expire.parse().expect(arg_err!("api-expire")),
         redis_ttl: ac.redis_ttl.parse().expect(arg_err!("redis-ttl")),
-        startup_time: localtime::unix_timestamp(),
-    });
+    };
 
     if !ac.listen.is_empty() && ac.listen.as_bytes()[0] == b':' {
         ac.listen.insert_str(0, "0.0.0.0");
     };
 
     if let Some((s1, s2)) = BANNER.split_once('?') {
+        // let s2 = &s2[APP_VER.len() - 1..];
         buf.clear();
-        buf.push_str(s1);
-        buf.push_str(APP_VER);
-        // buf.push_str(&s2[APP_VER.len() - 1..]);
-        buf.push_str(s2);
+        write!(buf, "{s1}{APP_VER}{s2}").unwrap();
         appcfg::print_banner(&buf, true);
     }
 
@@ -131,7 +154,7 @@ fn init() -> bool {
         dict::load(&ac.dict_file).unwrap();
     }
 
-    true
+    Some((ac, av))
 }
 
 fn init_log(ac: &AppConf) {
@@ -142,208 +165,190 @@ fn init_log(ac: &AppConf) {
         println!("config setting: {ac:#?}\n");
     }
 
-    asynclog::init_log(log_level, ac.log_file.clone(), log_max, !ac.no_console, true)
+    asynclog::Builder::new()
+        .level(log_level)
+        .log_file(ac.log_file.clone())
+        .log_file_max(log_max)
+        .use_console(!ac.no_console)
+        .use_async(true)
+        .builder()
         .expect("init log error");
     asynclog::set_level("mio".to_owned(), log::LevelFilter::Info);
+    asynclog::set_level("tokio_util".to_owned(), log::LevelFilter::Info);
     asynclog::set_level("hyper_util".to_owned(), log::LevelFilter::Info);
 }
 
-fn register_apis(srv: &mut HttpServer, ac: &AppConf) {
-    let gps = ac.gw_prefix.as_bytes();
-    let mut gw_path = String::new();
-    if gps[0] != b'/' {
-        gw_path.push('/');
+async fn init_redis(ac: &AppConf, av: &AppVar) {
+    // 初始化redis连接池
+    if !ac.redis_host.is_empty() {
+        let redis_config = redis::RedisConfig {
+            host: &ac.redis_host,
+            port: &ac.redis_port,
+            user: &ac.redis_user,
+            pass: &ac.redis_pass,
+            db: &ac.redis_db,
+        };
+        redis::init(&redis_config, av.redis_ttl)
+            .await
+            .context("connect redis fail")
+            .unwrap();
     }
-    gw_path.push_str(&ac.gw_prefix);
-    if gps[gps.len() - 1] != b'/' {
-        gw_path.push('/');
-    }
-
-    httpserver::register_apis!(srv, &gw_path,
-        "ping": apis::ping,
-        "ping/*": apis::ping,
-        "token": apis::token,
-        "blacklist": apis::blacklist,
-        "status": apis::status,
-        "query": apis::query,
-        "query/*": apis::query,
-        "reg": apis::reg,
-        "unreg": apis::unreg,
-        "cfg": apis::cfg,
-        "cfg/*": apis::cfg,
-        "recfg": apis::recfg,
-        "rate": apis::rate,
-        "rates": apis::rates,
-    );
 }
 
-async fn main_async() {
-    let ac = AppConf::get();
+fn init_invalid_token_db(ac: &AppConf) {
+    fn make_abs_path(db_path: &str) -> String {
+        #[cfg(not(target_os = "windows"))]
+        {
+            if db_path.as_bytes()[0] == b'/' {
+                db_path.to_string()
+            } else {
+                format!("{}/{}", get_app_path(), db_path)
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if db_path.len() > 2 && db_path.as_bytes()[1] == b':' {
+                db_path.to_string()
+            } else {
+                format!(r"{}\{}", get_app_path(), db_path)
+            }
+        }
+    }
+
+    if !ac.token_db.is_empty() {
+        db::init(&make_abs_path(&ac.token_db));
+    }
+}
+
+fn register_apis(srv: &mut HttpServer, ac: &AppConf) {
+    let gateway_prefix = ac.gw_prefix.as_bytes();
+    let mut gateway_path = String::new();
+    if gateway_prefix[0] != b'/' {
+        gateway_path.push('/');
+    }
+    gateway_path.push_str(&ac.gw_prefix);
+    if gateway_prefix[gateway_prefix.len() - 1] != b'/' {
+        gateway_path.push('/');
+    }
+
+    apis::register_apis(srv, &gateway_path);
+}
+
+async fn async_main(ac: AppConf, av: AppVar) -> Result<()> {
+    AppConf::init(ac);
+    appvars::init(av);
+
+    let (ac, av) = (AppConf::get(), appvars::get());
+
+    // 初始化日志组件
     init_log(ac);
+    // 初始化redis连接池
+    init_redis(ac, av).await;
+    // 初始化无效token数据库
+    init_invalid_token_db(ac);
 
     let max_jwt_cache_size = ac.mtcs.parse().expect(arg_err!("mtcs"));
     let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
+
     let (cancel_sender, cancel_manager) = httpserver::new_cancel();
+    CANCEL_SENDER
+        .set(cancel_sender)
+        .expect("init CANCEL_SENDER failed");
+    let mut cancel_receiver = cancel_manager.new_cancel_receiver();
 
     let mut srv = HttpServer::new();
     // 设置请求上下文路径
-    srv.set_context_path(&ac.context_path);
-    // 路由支持1级子路径匹配
-    srv.set_fuzzy_find(httpserver::FuzzyFind::One);
-    // 添加日志中间件
-    srv.set_middleware(httpserver::AccessLog);
-
-    // 缺省处理函数改为反向代理处理函数
-    srv.set_default_handler(proxy::proxy_handler);
-    // 允许用户通过发送取消消息来优雅的终止服务
-    srv.set_cancel_manager(cancel_manager);
+    srv.context_path(&ac.context_path)
+        // 路由支持1级子路径匹配
+        .fuzzy_find(httpserver::FuzzyFind::One)
+        // 添加日志中间件
+        .middleware(Arc::new(httpserver::AccessLog::new()))
+        // 缺省处理函数改为反向代理处理函数
+        .default_handler(proxy::proxy_handler)
+        // 允许用户通过发送取消消息来优雅的终止服务
+        .cancel_manager(cancel_manager);
 
     if !ac.jwt_key.is_empty() {
         // 添加token校验中间件
-        srv.set_middleware(auth::Authentication::new(
+        srv.middleware(Arc::new(auth::Authentication::new(
             &ac.jwt_key,
             &ac.jwt_issuer,
             max_jwt_cache_size,
             10 * 60,
-        ));
+        )));
     };
 
     // 注册网关接口
     register_apis(&mut srv, ac);
 
     // 添加限流中间件
-    let rl = srv.set_middleware(ratelimit::RateLimiterMiddleware::new(&ac.context_path));
-    unsafe { apis::RATE_LIMITER.init(rl) };
-
-    // 初始化redis连接池
-    if !ac.redis_host.is_empty() {
-        redis::init(&redis::RedisConfig {
-            host: &ac.redis_host,
-            port: &ac.redis_port,
-            user: &ac.redis_user,
-            pass: &ac.redis_pass,
-            db: &ac.redis_db,
-        }).await.context("connect redis fail").unwrap();
-    }
+    let rate_limiter = Arc::new(ratelimit::RateLimiter::new(&ac.context_path));
+    srv.middleware(rate_limiter.clone());
+    apis::RATE_LIMITER.init(rate_limiter);
 
     // 运行http server主服务
     let listener = srv.listen(addr).await.expect("http server listen error");
-    if !ac.context_path.is_empty() {
-        log::info!("http server context path: {}", ac.context_path);
-    }
-
+    // 运行http服务
     tokio::spawn(async move {
-        srv.arc().serve(listener).await.expect("http server run error");
+        if let Err(e) = Arc::new(srv).serve(listener).await {
+            log::error!("http server error: {e:?}");
+        }
     });
 
-    // 监听ctrl+c事件
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => {
-            println!("{APP_NAME} shutdowning, waiting {} connections closed...", cancel_sender.count());
-            cancel_sender.cancel_and_wait(Duration::from_secs(5)).await.unwrap();
+    tokio::select! {
+        // 监听ctrl+c信号
+        res = tokio::signal::ctrl_c() => {
+            match res {
+                Ok(_) => log::info!("The ctrl+c signal has been received, closed..."),
+                Err(e) => log::error!("Listening to the ctrl+c signal failed: {e:?}"),
+            }
+
+            // 设置本任务取消标志
+            cancel_receiver.finish();
+
+            // 发送退出信号
+            debug_assert!(CANCEL_SENDER.get().is_some());
+            if let Some(cancel_sender) = CANCEL_SENDER.get() {
+                cancel_sender.cancel(Duration::from_secs(2)).await;
+            }
         }
-        Err(e) => {
-            eprintln!("Unable to listen for shutdown signal: {e:?}");
+        _ = cancel_receiver.cancel_event() => {
+            // 设置本任务取消标志
+            cancel_receiver.finish();
+            log::info!("Received the exit signal, exiting...");
         }
-    };
+    }
+
+    Ok(())
 }
 
 // #[tokio::main(worker_threads = 4)]
 // #[tokio::main(flavor = "current_thread")]
 fn main() {
-    if !init() { return; }
-    // let ac = AppConf::get();
-
-    // let max_jwt_cache_size = ac.mtcs.parse().expect(arg_err!("mtcs"));
-    // let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
-    // let (cancel_sender, cancel_manager) = httpserver::new_cancel();
-
-    // let mut srv = HttpServer::new();
-    // // 设置请求上下文路径
-    // srv.set_context_path(&ac.context_path);
-    // // 路由支持1级子路径匹配
-    // srv.set_fuzzy_find(httpserver::FuzzyFind::One);
-    // // 添加日志中间件
-    // srv.set_middleware(httpserver::AccessLog);
-
-    // // 缺省处理函数改为反向代理处理函数
-    // srv.set_default_handler(proxy::proxy_handler);
-    // // 允许用户通过发送取消消息来优雅的终止服务
-    // srv.set_cancel_manager(cancel_manager);
-
-    // if !ac.jwt_key.is_empty() {
-    //     // 添加token校验中间件
-    //     srv.set_middleware(auth::Authentication::new(
-    //         &ac.jwt_key,
-    //         &ac.jwt_issuer,
-    //         max_jwt_cache_size,
-    //         10 * 60,
-    //     ));
-    // };
-
-    // // 注册网关接口
-    // register_apis(&mut srv, ac);
-
-    // let async_fn = async move {
-    //     // 添加限流中间件
-    //     let rl = srv.set_middleware(ratelimit::RateLimiterMiddleware::new(&ac.context_path));
-    //     unsafe { apis::RATE_LIMITER.init(rl) };
-
-    //     // 初始化redis连接池
-    //     if !ac.redis_host.is_empty() {
-    //         redis::init(&redis::RedisConfig {
-    //             host: &ac.redis_host,
-    //             port: &ac.redis_port,
-    //             user: &ac.redis_user,
-    //             pass: &ac.redis_pass,
-    //             db: &ac.redis_db,
-    //         }).await.context("connect redis fail").unwrap();
-    //     }
-
-    //     // 运行http server主服务
-    //     let listener = srv.listen(addr).await.expect("http server listen error");
-    //     if !ac.context_path.is_empty() {
-    //         log::info!("http server context path: {}", ac.context_path);
-    //     }
-
-    //     tokio::spawn(async move {
-    //         srv.arc().serve(listener).await.expect("http server run error");
-    //     });
-
-    //     // 监听ctrl+c事件
-    //     match tokio::signal::ctrl_c().await {
-    //         Ok(()) => {
-    //             println!("{APP_NAME} shutdowning, waiting {} connections closed...", cancel_sender.count());
-    //             cancel_sender.cancel_and_wait(Duration::from_secs(5)).await.unwrap();
-    //         }
-    //         Err(e) => {
-    //             eprintln!("Unable to listen for shutdown signal: {e:?}");
-    //         }
-    //     }
-    // };
-
-    let threads = AppConf::get().threads.parse::<usize>().expect(arg_err!("threads"));
-
-    #[cfg(not(feature = "multi_thread"))]
-    let mut builder = {
-        assert!(threads == 1, "{APP_NAME} current version unsupport multi-threads");
-        tokio::runtime::Builder::new_current_thread()
+    let (ac, av) = match parse() {
+        Some(v) => v,
+        None => return,
     };
 
-    #[cfg(feature = "multi_thread")]
-    let mut builder = {
-        assert!(threads <= 256, "multi-threads range in 0-256");
+    let threads = AppConf::get()
+        .threads
+        .parse::<usize>()
+        .expect(arg_err!("threads"));
 
+    let mut builder = if threads == 1 {
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        assert!(threads <= 256, "multi-threads range in 0-256");
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         if threads > 0 {
             builder.worker_threads(threads);
         }
-
         builder
     };
 
-    builder.enable_all()
-        .build()
-        .unwrap()
-        .block_on(main_async())
+    builder.enable_all().build().unwrap().block_on(async move {
+        if let Err(e) = async_main(ac, av).await {
+            eprintln!("application error: {e:?}");
+        }
+    })
 }
