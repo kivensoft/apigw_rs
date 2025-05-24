@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{AppConf, appvars, efmt};
+use crate::{appvars, efmt};
 
 type ServiceList = VecDeque<ServiceInfo>;
 type ServiceMap = DashMap<String, ServiceList>;
@@ -43,12 +43,10 @@ struct ServiceInfo {
     expire: u64,
 }
 
-
 /// 已注册的服务列表
 static SERVICES: LazyLock<ServiceMap> = LazyLock::new(DashMap::new);
 /// http request 请求的客户端，内部使用缓存池
 static CLIENT: OnceLock<ProxyClient> = OnceLock::new();
-
 
 impl ServiceInfo {
     pub fn new(endpoint: &str, expire: u64) -> Self {
@@ -60,8 +58,8 @@ impl ServiceInfo {
 }
 
 /// 注册服务, 返回true代表新注册服务, false代表服务续租
-pub fn register_service(path: &str, endpoint: &str) -> bool {
-    let hb_time = appvars::get().heart_break_live_time as u64;
+pub fn register_service(path: &str, endpoint: &str, ttl: u32) -> bool {
+    let hb_time = ttl as u64;
     // 注册服务的过期时间
     let expire = if_else!(hb_time != 0, unix_timestamp() + hb_time, 0);
     let services = get_services();
@@ -117,7 +115,7 @@ pub fn service_status() -> Vec<ServiceGroup> {
                 .filter(|v| v.expire == 0 || v.expire >= now)
                 .map(|v| GroupItem {
                     endpoint: v.endpoint.clone(),
-                    expire: set_expire(v.expire),
+                    expire: make_expire(v.expire),
                 })
                 .collect();
 
@@ -154,7 +152,7 @@ pub fn service_query(mut path: &str) -> Option<Vec<GroupItem>> {
                 .filter(|s| s.expire > now || s.expire == 0)
                 .map(|s| GroupItem {
                     endpoint: s.endpoint.clone(),
-                    expire: set_expire(s.expire),
+                    expire: make_expire(s.expire),
                 })
                 .collect();
 
@@ -178,11 +176,7 @@ pub fn service_query(mut path: &str) -> Option<Vec<GroupItem>> {
 /// 如果服务端点不存在或转发失败，将返回相应的错误信息
 pub async fn proxy_handler(ctx: HttpContext) -> HttpResponse {
     let path = ctx.uri().path().to_owned();
-    let full_path = ctx
-        .uri()
-        .path_and_query()
-        .map_or("", |v| v.as_str())
-        .to_owned();
+    let full_path = ctx.uri().path_and_query().map_or("", |v| v.as_str()).to_owned();
     let mut finded = false;
 
     // 获取path对应的endpoint，找不到直接返回service not found错误
@@ -217,6 +211,26 @@ pub async fn proxy_handler(ctx: HttpContext) -> HttpResponse {
     }
 }
 
+/// 清理反向代理列表中的过期项
+pub fn services_clean() {
+    let now = unix_timestamp();
+
+    get_services().retain(|path, service_list| {
+        service_list.retain(|service| {
+            let exp = service.expire;
+            if exp == 0 || exp >= now {
+                true
+            } else {
+                log::debug!("service clean expired: {} => {}", path, service.endpoint);
+                false
+            }
+        });
+
+        !service_list.is_empty()
+    });
+}
+
+/// 获取指定服务的端点
 fn get_service_endpoint(mut path: &str) -> Option<CompactString> {
     let services = get_services();
     let mut finish = false;
@@ -255,6 +269,7 @@ fn get_service_endpoint(mut path: &str) -> Option<CompactString> {
     None
 }
 
+/// 创建新的基于端点的请求url
 fn create_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
     let mut buf = SmallString::<[u8; 256]>::new();
     buf.push_str("http://");
@@ -266,6 +281,7 @@ fn create_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
     buf.parse().with_context(|| "parse forward uri fail")
 }
 
+/// 创建代理请求的body
 fn create_req(ctx: HttpContext, uri: Uri) -> ProxyRequest {
     let mut parts = ctx.parts.clone();
     parts.uri = uri;
@@ -286,7 +302,8 @@ fn unregister_service_by_endpoint(endpoint: &str) {
     });
 }
 
-fn set_expire(expire: u64) -> Option<LocalDateTime> {
+/// 生成unix timestamp过期时间的本地时间格式
+fn make_expire(expire: u64) -> Option<LocalDateTime> {
     if expire != 0 {
         Some(LocalDateTime::from_unix_timestamp(expire as i64))
     } else {
@@ -296,7 +313,7 @@ fn set_expire(expire: u64) -> Option<LocalDateTime> {
 
 fn get_client() -> &'static ProxyClient {
     CLIENT.get_or_init(|| {
-        let timeout: u64 = AppConf::get().conn_timeout.parse().unwrap_or(2);
+        let timeout: u64 = appvars::get().srv_conn_timeout as u64;
         let mut http_conn = HttpConnector::new();
 
         http_conn.set_connect_timeout(Some(Duration::from_secs(timeout)));

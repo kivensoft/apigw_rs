@@ -17,9 +17,7 @@ pub struct DictItem {
     pub value: DictValue,
 }
 
-
 static DICT_MAP: OnceLock<Arc<DictData>> = OnceLock::new();
-
 
 pub fn query(key_prefix: &str) -> Option<DictItems> {
     let dict_data = match DICT_MAP.get() {

@@ -27,7 +27,7 @@ default = []
 
 [dependencies]
 tokio = { version = "1.44", features = ["fs", "signal", "time"] } # 最流行的异步io库
-tokio-utils = "0.1"
+tokio-utils = "0.1" # tokio扩展工具类
 hyper = { version = "1.6", features = ["http1", "client"] } # 最流行的底层http协议库
 hyper-util = { version = "0.1", features = [ "client", "client-legacy", "http1", "tokio" ] } #hyper 扩展库
 http-body-util = "0.1" # http body 扩展库
@@ -45,8 +45,7 @@ futures-util = "0.3" # 异步扩展库
 async-trait = "0.1" # trait的异步函数声明库
 compact_str = { version = "0.9", features = ["serde", "bytes"] } # 小字符串内嵌的字符串替代库
 parking_lot = "0.12" # 性能更好的替代标准库Mutex/RwLock的三方库
-# triomphe = "0.1" # 比标准库的Arc更轻量的替代类(功能更多，对C++更友好)
-# rclite = "0.2" # 比标准库的Arc更轻量的替代类(着重于减少内存占用)
+triomphe = "0.1" # 比标准库的Arc更轻量的替代类(功能更多，对C++更友好)
 # arc-swap = "1.7" # 类似Mutex<Arc<T>>的类，但更高效
 # fnv = "1.0" # 在小数量时比hashmap更快的map
 mini-moka = "0.10" # 轻量级缓存库，rust版本的Caffeine实现
@@ -57,17 +56,12 @@ smallstr = { version = "0.3", features = ["serde"] } # 基于栈的字符串
 rand = "0.9" # 最广泛使用的随机数生成库
 itoa = "1.0" # 快速整数转字符串库
 # rusty-leveldb = { version = "3", features = ["asyncdb-tokio"] } # 基于leveldb的kv存储库
-redb = "2.5"
-base64 = "0.22"
-# 支持命令行参数解析和配置文件参数解析的库
-appcfg = { version = "1.0.3" }
-# 支持终端ansi颜色的库
-ansicolor = "1.0"
-# 支持同步和异步两种方式的迷你日志实现库
-asynclog = { version = "1.0.9", features = ["tokio"] }
-# 本地时间序列化反序列化库
-localtime = { git = "https://gitee.com/kivensoft/localtime_rs.git" }
-# 迷你的http库
-jwt = { git = "https://gitee.com/kivensoft/jwt_rs.git" }
-# 迷你的http库
-httpserver = { version = "1.0", features = ["english"], path = "httpserver" }
+redb = "2.5" # 嵌入式kv数据库
+base64 = "0.22" # base64 编解码库
+appcfg = { version = "1.0.3" } # 支持命令行参数解析和配置文件参数解析的库
+ansicolor = "1.0" # 支持终端ansi颜色的库
+asynclog = { version = "1.0.9", features = ["tokio"] } # 支持同步和异步两种方式的迷你日志实现库
+localtime = { git = "https://gitee.com/kivensoft/localtime_rs.git" } # 本地时间序列化反序列化库
+kjwt = { git = "https://gitee.com/kivensoft/jwt_rs.git" }
+# kjwt = "1.0.7" # 迷你的json web token库
+httpserver = { version = "1.0", features = ["english"], path = "httpserver" } # 迷你的http库

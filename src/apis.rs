@@ -2,11 +2,14 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
-    appvars, db, dict, efmt, proxy::{self, ServiceGroup},
-    ratelimit::RateLimiter, statics::StaticVal, AppConf
+    appvars,
+    auth::JwtClaims,
+    db, dict,
+    proxy::{self, ServiceGroup},
+    ratelimit::RateLimiter,
+    statics::StaticVal,
 };
-use anyhow::Context;
-use base64::{engine::general_purpose, Engine};
+use base64::{Engine, engine::general_purpose};
 use compact_str::{CompactString, format_compact};
 use httpserver::{HttpContext, HttpResponse, HttpServer, Resp, http_bail};
 use localtime::LocalDateTime;
@@ -19,6 +22,7 @@ pub static RATE_LIMITER: StaticVal<Arc<RateLimiter>> = StaticVal::new();
 #[serde(rename_all = "camelCase")]
 struct RegRequest {
     endpoint: CompactString,
+    ttl: Option<u32>,
     path: Option<CompactString>,
     paths: Option<Vec<CompactString>>,
 }
@@ -74,8 +78,7 @@ pub async fn token(mut ctx: HttpContext) -> HttpResponse {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Req {
-        ttl: u32,      // token存活时间(分钟为单位)
-        claims: Value, // 附加要加入jwt的字段及内容
+        uid: u32,
     }
 
     #[derive(Serialize)]
@@ -84,20 +87,20 @@ pub async fn token(mut ctx: HttpContext) -> HttpResponse {
         token: String,
     }
 
-    let ac = AppConf::get();
-    if ac.jwt_key.is_empty() {
+    let av = appvars::get();
+    if av.jwt_key.is_empty() {
         return Resp::fail("jwt token generation is not supported");
     }
 
     let param: Req = ctx.parse_json().await?;
-    if !param.claims.is_object() {
-        return Resp::fail("jwt token claims must be object");
-    }
 
-    log::info!("create jwt token from {}", param.claims);
-    let exp = (param.ttl * 60) as u64;
-    let token = jwt::encode(param.claims, &ac.jwt_key, &ac.jwt_issuer, exp)
-        .with_context(|| efmt!("jwt encode error"))?;
+    let mut buf = itoa::Buffer::new();
+    let uid = Some(CompactString::new(buf.format(param.uid)));
+    let iss = Some(av.jwt_issuer.clone());
+    let exp = Some(kjwt::unix_timestamp_after(av.jwt_ttl as u64)?);
+    let claims = JwtClaims { iss, exp, uid };
+    let claims_json = serde_json::to_string(&claims)?;
+    let token = kjwt::encode_raw(&claims_json, &av.jwt_key)?;
 
     Resp::ok(&Res { token })
 }
@@ -110,8 +113,8 @@ pub async fn blacklist(mut ctx: HttpContext) -> HttpResponse {
         token: String,
     }
 
-    let ac = AppConf::get();
-    if ac.jwt_key.is_empty() {
+    let av = appvars::get();
+    if av.jwt_key.is_empty() {
         http_bail!("Not Support Jwt Token");
     }
     if !db::is_valid() {
@@ -225,26 +228,20 @@ pub async fn reg(mut ctx: HttpContext) -> HttpResponse {
         return Resp::fail("param path and paths not find");
     }
 
+    let ttl = param.ttl.unwrap_or_else(|| appvars::get().heart_break_live_time);
+
     // 优先使用path参数进行注册
     if let Some(path) = &param.path {
-        if proxy::register_service(path, &param.endpoint) {
-            log::info!(
-                "service[{} => {}] registration successful",
-                param.endpoint,
-                path,
-            );
+        if proxy::register_service(path, &param.endpoint, ttl) {
+            log::info!("service[{} => {}] registration successful", param.endpoint, path,);
         }
     }
 
     // path参数为空时使用paths参数进行注册
     if let Some(paths) = &param.paths {
         for path in paths {
-            if proxy::register_service(path, &param.endpoint) {
-                log::info!(
-                    "service[{} => {}] registration successful",
-                    param.endpoint,
-                    path
-                );
+            if proxy::register_service(path, &param.endpoint, ttl) {
+                log::info!("service[{} => {}] registration successful", param.endpoint, path);
             }
         }
     }
@@ -330,9 +327,9 @@ pub async fn cfg(mut ctx: HttpContext) -> HttpResponse {
 
 /// 重新加载配置信息
 pub async fn recfg(_ctx: HttpContext) -> HttpResponse {
-    let ac = AppConf::get();
-    if !ac.dict_file.is_empty() {
-        dict::load(&ac.dict_file).unwrap();
+    let av = appvars::get();
+    if !av.dict_file.is_empty() {
+        dict::load(&av.dict_file).unwrap();
         log::info!("dict-file reload completed");
         Resp::ok_empty()
     } else {

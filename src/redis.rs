@@ -28,9 +28,7 @@ struct GlobalVal {
     expire_secs: u32,
 }
 
-
 static GLOBAL_VAL: StaticVal<GlobalVal> = StaticVal::new();
-
 
 pub async fn init(cfg: &RedisConfig<'_>, expire_secs: u32) -> Result<()> {
     let port = cfg.port.parse::<u16>().unwrap_or(6379);
