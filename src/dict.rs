@@ -1,63 +1,55 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use appcfg::Config;
-use qp_trie::{Trie, wrapper::BString};
-use serde::Serialize;
+use compact_str::CompactString;
+use fast_radix_trie::GenericRadixMap;
+use tokio::sync::RwLock;
 
-use crate::efmt;
+type DictMap = GenericRadixMap<String, CompactString>;
 
-pub type DictItems = Vec<DictItem>;
-type DictValue = Arc<String>;
-type DictData = Trie<BString, DictValue>;
+static DICT_MAP: OnceLock<RwLock<DictMap>> = OnceLock::new();
 
-#[derive(Serialize, Clone)]
-pub struct DictItem {
-    pub key: String,
-    pub value: DictValue,
+/// 获取字典项, 精确匹配key
+#[allow(dead_code)]
+pub async fn get<K: Into<String> + AsRef<str>>(key: K) -> Option<CompactString> {
+    let map = get_instance().read().await;
+    map.get(key).cloned()
 }
 
-static DICT_MAP: OnceLock<Arc<DictData>> = OnceLock::new();
+/// 获取字典项, 模糊匹配key前缀, 建议查询前缀时结尾自带分隔符, 例如 "common.mysql."
+pub async fn query(key_prefix: &str) -> Vec<(String, CompactString)> {
+    let map = get_instance().read().await;
+    let mut ret = Vec::with_capacity(32);
+    for (key, value) in map.iter_prefix(key_prefix) {
+        ret.push((key, value.clone()));
+    }
 
-pub fn query(key_prefix: &str) -> Option<DictItems> {
-    let dict_data = match DICT_MAP.get() {
-        Some(v) => v.clone(),
-        None => {
-            log::error!("dict.rs::DICT_MAP not initialized");
-            return None;
+    ret
+}
+
+pub async fn load(path: &str) -> Result<()> {
+    // 将文件中的键值对，转换到map
+    let cfg = match Config::with_file(path) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::warn!(%err, %path, "加载公共配置失败");
+            anyhow::bail!(err);
         }
     };
 
-    let items: Vec<_> = dict_data
-        .iter_prefix_str(key_prefix)
-        .map(|(k, v)| DictItem::new(k.as_str(), v.clone()))
-        .collect();
+    let mut map = get_instance().write().await;
 
-    if !items.is_empty() { Some(items) } else { None }
-}
-
-pub fn load(filename: &str) -> Result<()> {
-    // 将文件中的键值对，转换到map
-    let cfg = Config::with_file(filename)
-        .with_context(|| format!("load {} fail", filename))
-        .with_context(|| efmt!("load dict fail"))?;
-    let mut dict_data = DictData::new();
+    map.clear();
 
     for (key, value) in cfg.iter() {
-        dict_data.insert_str(key, Arc::new(String::from(value)));
+        map.insert(key, CompactString::new(value));
     }
+    tracing::info!(%path, "加载公共配置成功");
 
-    match DICT_MAP.set(Arc::new(dict_data)) {
-        Ok(_) => Ok(()),
-        Err(_) => bail!("dict.rs, The variable has already been initialized"),
-    }
+    Ok(())
 }
 
-impl DictItem {
-    pub fn new(key: &str, value: Arc<String>) -> Self {
-        DictItem {
-            key: String::from(key),
-            value,
-        }
-    }
+fn get_instance() -> &'static RwLock<DictMap> {
+    DICT_MAP.get_or_init(|| RwLock::new(DictMap::new()))
 }

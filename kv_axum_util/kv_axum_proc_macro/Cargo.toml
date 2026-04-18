@@ -1,0 +1,13 @@
+[package]
+name = "kv_axum_proc_macro"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["kiven <kivensoft@gmail.com>"]
+description = "attribute Bean for struct and api get and set library"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+zyn = { version = "0.5", features = ["ext"] }

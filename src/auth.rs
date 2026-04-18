@@ -1,292 +1,327 @@
+use axum::{
+    extract::{FromRequestParts, Request, State},
+    http::request::Parts,
+    middleware::Next,
+    response::Response,
+};
 use compact_str::CompactString;
-use cookie::Cookie;
-use httpserver::{HttpContext, HttpResponse, Next};
-use hyper::http::HeaderValue;
-use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, sync::Arc, time::Duration};
+use hyper::header;
+use kv_axum_util::{bean, if_else, unix_timestamp};
+use mini_moka::sync::ConcurrentCacheExt;
+use prost::Message;
+use rclite::Arc;
+use std::time::Duration;
 use tokio::task;
 
-use crate::{appvars, db, redis};
+use crate::{appvars::{APP_VAR, REDIS_CLIENT}, db};
 
-type Cache<K, V> = mini_moka::sync::Cache<K, V>;
-type TokenCache = Cache<String, Arc<JwtClaims>>;
+const AUTH_INFO_ENCODE_SIZE: usize = 64;
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(prost::Message)]
+pub struct AuthInfo {
+    #[prost(uint64, tag = "1")]
+    pub exp: u64,
+
+    #[prost(uint32)]
+    pub uid: u32,
+}
+
+#[bean(ser, deser)]
 pub struct JwtClaims {
     pub iss: Option<CompactString>,
-    pub exp: Option<u64>,
-    pub uid: Option<CompactString>,
+    pub exp: u64,
+    pub uid: u32,
 }
 
-pub struct Authentication {
-    gw_prefix: CompactString,
-    key: CompactString,
-    iss: CompactString,
-    redis_prefix: String,
-    token_cache: TokenCache,
-}
+#[derive(Clone)]
+pub struct UserId(pub u32);
 
-const ACCESS_TOKEN: &str = "access_token";
-const COOKIE_NAME: &str = "Cookie";
-const USER_ID: &str = "X-UserId";
-pub const CK_TOKEN: &str = "token";
+impl<S: Send + Sync> FromRequestParts<S> for UserId {
+    type Rejection = std::convert::Infallible;
 
-#[async_trait::async_trait]
-impl httpserver::HttpMiddleware for Authentication {
-    async fn handle<'a>(&'a self, mut ctx: HttpContext, next: Next<'a>) -> HttpResponse {
-        // 非网关接口访问，则进行token校验
-        if !ctx.uri().path().starts_with(self.gw_prefix.as_str()) {
-            let mut user_id = None;
-
-            // 解析token并进行校验，校验成功返回uid
-            if let Some(token) = Self::get_token(&ctx) {
-                if let Some(uid) = self.verify_token(&token).await {
-                    if let Ok(uid) = HeaderValue::from_str(&uid) {
-                        user_id = Some(uid)
-                    }
-                }
-            }
-
-            // 添加头部标志，指明token校验是否成功
-            let user_id = user_id.unwrap_or_else(|| HeaderValue::from_static("0"));
-            ctx.parts.headers.remove(USER_ID);
-            ctx.parts.headers.append(USER_ID, user_id);
+    #[allow(clippy::manual_async_fn)]
+    fn from_request_parts(
+        parts: &mut Parts, _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        async move {
+            let user_id = parts.extensions.get::<UserId>().map_or(0, |v| v.0);
+            Ok(UserId(user_id))
         }
-
-        next.run(ctx).await
     }
 }
 
-impl Authentication {
+type CacheKey = [u8; 32];
+type Cache<K, V> = mini_moka::sync::Cache<K, V>;
+type TokenCache = Cache<CacheKey, Arc<AuthInfo>>;
+
+pub struct AuthState {
+    pub key: String,
+    pub iss: String,
+    pub redis_prefix: String,
+    pub token_cache: Arc<TokenCache>,
+}
+
+impl AuthState {
     /// 创建认证对象
     ///
-    /// * `key`: jwt签名密钥
-    /// * `issuer` jwt签发者
-    /// * `cache_size` 签名校验缓存允许的最大条目
-    /// * `cache_ttl` 签名校验缓存项的最大生存时间(单位：秒)
-    ///
-    pub fn new(
-        gw_prefix: CompactString,
-        key: &str,
-        issuer: &str,
-        redis_prefix: &str,
-        cache_size: u64,
-        cache_ttl: u32,
+    /// * `key`: jwt 签名密钥, 为空表示禁用 jwt 校验
+    /// * `iss` jwt 签发者, 为空表示不校验签发者
+    /// * `cache_cap` 签名校验缓存允许的最大条目
+    /// * `cache_ttl` 签名校验缓存项的最大生存时间(单位：秒), 本地缓存及二级缓存共用
+    pub fn new<S: Into<String>>(
+        key: S, iss: S, redis_prefix: S, cache_cap: u32, cache_ttl: u32,
     ) -> Self {
-        Authentication {
-            gw_prefix,
-            key: CompactString::new(key),
-            iss: CompactString::new(issuer),
-            redis_prefix: String::from(redis_prefix),
-            token_cache: Cache::builder()
-                .max_capacity(cache_size)
-                .time_to_live(Duration::from_secs(cache_ttl as u64))
-                .build(),
+        let auth_state = AuthState {
+            key: key.into(),
+            iss: iss.into(),
+            redis_prefix: redis_prefix.into(),
+            token_cache: Arc::new(
+                Cache::builder()
+                    .max_capacity(cache_cap as u64)
+                    .time_to_live(Duration::from_secs(cache_ttl as u64))
+                    .build(),
+            ),
+        };
+
+        let cache = auth_state.token_cache.clone();
+        // 启动定时清理本地缓存过期数据的任务
+        task::spawn(async move {
+            use tokio::time::sleep;
+            loop {
+                sleep(Duration::from_secs(cache_ttl as u64)).await;
+                cache.sync();
+            }
+        });
+
+        auth_state
+    }
+
+    /// 从多级缓存中加载数据, 优先从本地缓存中读取, 没有则转到二级缓存中读取
+    async fn load_from_multi_cache(&self, sign: &str) -> Option<Arc<AuthInfo>> {
+        // 优先从本地缓存中读取
+        let mut sign_bs = CacheKey::default();
+        let use_local = decode_sign(&mut sign_bs, sign);
+        if use_local {
+            let auth_info = self.token_cache.get(&sign_bs);
+            if auth_info.is_some() {
+                return auth_info;
+            }
+        }
+
+        // 尝试从二级缓存 redis 中读取
+        let result = self.load_from_redis(sign).await;
+        if let Some(auth_info) = &result {
+            self.token_cache.insert(sign_bs, auth_info.clone());
+        }
+        result
+    }
+
+    /// 保存到本地缓存及二级缓存中
+    fn save_to_multi_cache(&self, sign: &str, auth_info: Arc<AuthInfo>) {
+        // 本地缓存中已存在, 直接返回
+        let mut sign_bs = CacheKey::default();
+        let use_local = decode_sign(&mut sign_bs, sign);
+        if use_local && self.token_cache.contains_key(&sign_bs) {
+            return;
+        }
+
+        // 保存到二级缓存
+        self.save_to_redis(sign, &auth_info);
+        // 保存到本地缓存
+        if use_local {
+            self.token_cache.insert(sign_bs, auth_info);
         }
     }
 
-    /// 校验jwt token
-    ///
-    /// * `token`: jwt令牌
-    ///
-    /// Returns:
-    ///
-    ///   `Some(uid)`: 校验成功，返回uid, `None`:校验失败
-    ///
-    async fn verify_token(&self, token: &str) -> Option<CompactString> {
-        // 获取token的签名值
-        let sign = match kjwt::get_sign(token) {
-            Some(sign) => sign.to_string(),
-            None => {
-                log::info!("jwt token format error: can't find sign of {}", token);
-                return None;
-            }
-        };
+    // fn remove_from_multi_cache(&self, sign: &str) {
+    //     let mut sign_bs = CacheKey::default();
+    //     let use_local = decode_sign(&mut sign_bs, sign);
+    //     if use_local {
+    //         self.token_cache.invalidate(&sign_bs);
+    //     }
 
-        // 判断是否在黑名单中(用户退出，或者管理员手动添加)
-        if is_blacklist(&sign).await {
-            log::debug!("jwt token is in blacklist: {}", token);
+    //     if !APP_VAR.get().use_redis {
+    //         return;
+    //     }
+
+    //     let key = self.gen_redis_key(sign);
+    //     task::spawn(async move {
+    //         if let Err(e) = REDIS_CLIENT.get().del(key).await {
+    //             tracing::error!(err = %e, "从 redis 删除 key 失败");
+    //         }
+    //     });
+    // }
+
+    /// 从 redis 中加载签名对应的认证信息
+    async fn load_from_redis(&self, sign: &str) -> Option<Arc<AuthInfo>> {
+        if !APP_VAR.get().use_redis {
             return None;
         }
 
-        // 优先从本地缓存中读取签名，减少解密次数
-        let claims = match self.token_cache.get(&sign) {
-            Some(claims) => Some(claims),
-            None => match load_from_redis(&self.redis_prefix, &sign).await {
-                Some(claims) => {
-                    let claims = Arc::new(claims);
-                    self.token_cache.insert(sign.clone(), claims.clone());
-                    Some(claims)
-                }
-                None => None,
+        let key = self.gen_redis_key(sign);
+
+        let value: Vec<u8> = match REDIS_CLIENT.get().get(&key).await {
+            Ok(v) => match v {
+                Some(s) => s,
+                None => return None,
+            },
+            Err(e) => {
+                tracing::error!(err = %e, "访问 redis 出现错误");
+                return None;
             },
         };
 
-        // 如果缓存中有值，判断token的iss和exp的有效性
-        if let Some(claims) = claims {
-            let iss = claims.iss.as_ref().map(|v| v.as_str());
-            match kjwt::check_claims(&self.iss, &iss, &claims.exp) {
-                Ok(_) => return claims.uid.clone(),
-                Err(e) => log::info!("check_claims error: {e:?}"),
-            }
-        };
-
-        fn get_iss_exp(claims: &JwtClaims) -> (Option<&str>, Option<u64>) {
-            let iss = claims.iss.as_ref().map(|v| v.as_str());
-            (iss, claims.exp)
-        }
-
-        // 缓存中没有，进行验证步骤，并将解析的claims缓存起来
-        match kjwt::decode_custom(token, &self.key, &self.iss, get_iss_exp) {
-            Ok(claims) => {
-                let uid = claims.uid.clone();
-                save_to_redis(&self.redis_prefix, &sign, &claims);
-                self.token_cache.insert(sign, Arc::new(claims));
-                return uid;
-            }
-            Err(e) => log::warn!("jwt token decode error: {e:?}"),
-        }
-
-        None
-    }
-
-    /// 从HTTP请求上下文中获取令牌
-    ///
-    /// 尝试从请求头中获取JWT令牌，如果请求头中没有JWT令牌，
-    /// 则尝试从其他地方获取访问令牌
-    ///
-    /// ### 参数
-    ///
-    /// * `ctx` - 一个HTTP请求上下文的引用，用于访问请求头和其他信息
-    ///
-    /// ### 返回值
-    ///
-    /// 如果找到有效的令牌，则返回Some(Cow<str>)，否则返回None
-    fn get_token(ctx: &HttpContext) -> Option<Cow<str>> {
-        // 尝试从请求头中获取AUTHORIZATION字段
-        match ctx.headers().get(kjwt::AUTHORIZATION) {
-            // 如果成功获取到AUTHORIZATION字段
-            Some(auth) => match auth.to_str() {
-                // 将字段值转换为字符串
-                Ok(auth) => {
-                    // 检查令牌是否以"Bearer "开头，并且长度大于"Bearer "的长度
-                    if auth.len() > kjwt::BEARER.len() && auth.starts_with(kjwt::BEARER) {
-                        // 如果是，则返回令牌的剩余部分
-                        Some(Cow::Borrowed(&auth[kjwt::BEARER.len()..]))
-                    } else {
-                        // 如果不是，则记录日志并返回None
-                        log::trace!("Authorization is not jwt token");
-                        None
-                    }
-                }
-                // 如果字段值转换为字符串失败，则记录错误并返回None
-                Err(e) => {
-                    log::warn!("Authorization value is invalid: {:?}", e);
-                    None
-                }
+        let auth_info = match AuthInfo::decode(value.as_ref()) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(err = %e, "解码 AuthInfo 结构失败");
+                return None;
             },
-            // 如果没有获取到AUTHORIZATION字段，则尝试从其他地方获取访问令牌
-            None => Self::get_access_token(ctx),
+        };
+
+        Some(Arc::new(auth_info))
+    }
+
+    /// 保存签名对应的信息到 redis (异步方式保存)
+    fn save_to_redis(&self, sign: &str, auth_info: &AuthInfo) {
+        if !APP_VAR.get().use_redis {
+            return;
+        }
+
+        let key = self.gen_redis_key(sign);
+        let mut value = Vec::with_capacity(AUTH_INFO_ENCODE_SIZE);
+        if let Err(e) = auth_info.encode(&mut value) {
+            tracing::error!(err = %e, "AuthInfo 序列化成 protobuf 失败");
+            return;
+        }
+
+        task::spawn(async move {
+            if let Err(e) = REDIS_CLIENT.get().set(key, value).await {
+                tracing::error!(err = %e, "保存 AuthInfo 到 redis 失败");
+            }
+        });
+    }
+
+    /// 根据`sign`生成 redis 的 key
+    fn gen_redis_key(&self, sign: &str) -> String {
+        let mut key = String::with_capacity(128);
+        key.push_str(&self.redis_prefix);
+        key.push(':');
+        key.push_str(CK_JWT);
+        key.push(':');
+        key.push_str(sign);
+        key
+    }
+}
+
+const CK_JWT: &str = "jwt";
+const BEARER: &str = "Bearer ";
+
+pub async fn auth_middleware(
+    State(state): State<Arc<AuthState>>, mut req: Request, next: Next,
+) -> Response {
+    // key 不为空, 表示开启 jwt 验证
+    if !state.key.is_empty() {
+        // 获取 jwt token
+        let jwt_token = match get_auth_header(&req) {
+            Some(auth_header) => get_jwt_token(auth_header).to_string(),
+            None => String::new(),
+        };
+
+        // 从认证令牌解析用户ID, 解析成功是用户id, 解析失败是 0
+        let uid = parse_uid(jwt_token, &state).await.unwrap_or(0);
+
+        // 将数据存入请求扩展
+        req.extensions_mut().insert(UserId(uid));
+    }
+
+    next.run(req).await
+}
+
+async fn parse_uid(jwt_token: String, state: &AuthState) -> Option<u32> {
+    if jwt_token.is_empty() {
+        return None;
+    }
+
+    // 获取 token 中的签名
+    let sign = match kjwt::get_sign(&jwt_token) {
+        Some(sign) => sign,
+        None => return None,
+    };
+
+    // 如果签名在黑名单中存在(表示 token 无效)
+    if is_blacklist(sign) {
+        return None;
+    }
+
+    let now = unix_timestamp();
+
+    // 从缓存中加载解码信息成功, 直接返回
+    if let Some(auth_info) = state.load_from_multi_cache(sign).await {
+        // 判断过期时间
+        return if_else!(now <= auth_info.exp, Some(auth_info.uid), None);
+    }
+
+    // 进行解码操作
+    match kjwt::decode_custom(&jwt_token, &state.key, &state.iss, get_iss_exp) {
+        Ok(claims) => {
+            let uid = claims.uid;
+            let auth_info = Arc::new(AuthInfo { exp: claims.exp, uid: claims.uid });
+            // 保存到缓存
+            state.save_to_multi_cache(sign, auth_info);
+            Some(uid)
+        },
+        Err(e) => {
+            tracing::error!(err = %e, "解码 jwt 失败");
+            None
+        },
+    }
+}
+
+fn get_auth_header(req: &Request) -> Option<&str> {
+    if let Some(auth_value) = req.headers().get(header::AUTHORIZATION) {
+        match auth_value.to_str() {
+            Ok(auth_header) => return Some(auth_header),
+            Err(_) => {
+                tracing::warn!("请求头部 {} 有无效字符", header::AUTHORIZATION);
+            },
         }
     }
 
-    /// 从url参数或cookie中解析access_token
-    ///
-    /// ### 参数
-    /// * `ctx`: HttpContext引用，用于访问HTTP请求的上下文信息
-    ///
-    /// ### 返回值
-    /// * `Option<Cow<str>>`: 如果找到有效的access_token，则返回Some(Cow<str>)，否则返回None
-    fn get_access_token(ctx: &HttpContext) -> Option<Cow<str>> {
-        // 优先从url中获取access_token参数
-        if let Some(query) = ctx.uri().query() {
-            if let Some(token) = form_urlencoded::parse(query.as_bytes())
-                .find(|(k, _)| k.as_ref() == ACCESS_TOKEN)
-                .map(|(_, v)| v)
-            {
-                return Some(token);
-            }
-        };
+    None
+}
 
-        // url中找不到, 尝试从cookie中获取access_token
-        if let Some(cookie_str) = ctx.headers().get(COOKIE_NAME) {
-            let cookie_str = match cookie_str.to_str() {
-                Ok(s) => s,
-                Err(e) => {
-                    log::warn!("cookie value is not utf8 string: {:?}", e);
-                    return None;
-                }
-            };
+fn get_jwt_token(auth_header: &str) -> &str {
+    if auth_header.len() > BEARER.len() {
+        let prefix = &auth_header[..BEARER.len()];
 
-            for cookie in Cookie::split_parse_encoded(cookie_str) {
-                match cookie {
-                    Ok(item) => {
-                        if item.name() == ACCESS_TOKEN {
-                            return Some(Cow::Owned(String::from(item.value())));
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("cookie value [{cookie_str}] parse encode error: {e:?}");
-                        return None;
-                    }
-                }
-            }
+        if BEARER.eq_ignore_ascii_case(prefix) {
+            return &auth_header[BEARER.len()..];
         }
+    }
 
-        None
+    auth_header
+}
+
+/// 解码 base64 格式的签名
+fn decode_sign(out: &mut CacheKey, sign: &str) -> bool {
+    use base64::engine::{Engine, general_purpose::URL_SAFE_NO_PAD};
+
+    match URL_SAFE_NO_PAD.decode_slice(sign.as_bytes(), out) {
+        Ok(count) => count == out.len(),
+        Err(e) => {
+            tracing::error!(err = %e, "解码 jwt 签名(base64)失败");
+            false
+        },
     }
 }
 
 /// 判断token是否在黑名单中（用户已更新token或者用户已被删除或者已退出登录）
-async fn is_blacklist(sign: &str) -> bool {
+fn is_blacklist(sign: &str) -> bool {
     db::exists(sign)
 }
 
-/// 从redis中加载签名对应的信息
-async fn load_from_redis(prefix: &str, sign: &str) -> Option<JwtClaims> {
-    if !appvars::get().use_redis {
-        return None;
-    }
-
-    let key = gen_redis_key(prefix, sign);
-
-    let value: String = match redis::get(&key).await.unwrap_or(None) {
-        Some(v) => v,
-        None => return None,
-    };
-
-    let claims = match serde_json::from_str(&value) {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("parse token from redis error: {:?}, token = {}", e, value);
-            return None;
-        }
-    };
-
-    Some(claims)
-}
-
-/// 保存签名对应的信息到redis(异步方式保存)
-fn save_to_redis(prefix: &str, sign: &str, claims: &JwtClaims) {
-    if !appvars::get().use_redis {
-        return;
-    }
-
-    let key = gen_redis_key(prefix, sign);
-    match serde_json::to_string(claims) {
-        Ok(value) => {
-            task::spawn(async move {
-                let (k, v) = (key, value);
-                if let Err(e) = redis::set(&k, &v).await {
-                    log::error!("save_to_redis error: {}", e);
-                }
-            });
-        }
-        Err(e) => log::error!("serialize token to json error: {:?}", e),
-    };
-}
-
-fn gen_redis_key(prefix: &str, sign: &str) -> String {
-    format!("{}:{}:{}", prefix, CK_TOKEN, sign)
+fn get_iss_exp(claims: &JwtClaims) -> (Option<&str>, Option<u64>) {
+    let iss = claims.iss.as_ref().map(|v| v.as_str());
+    (iss, Some(claims.exp))
 }

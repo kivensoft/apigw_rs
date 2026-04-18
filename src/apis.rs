@@ -1,414 +1,274 @@
-//! 网关应用提供的服务接口
-use std::{sync::Arc, time::Duration};
+use std::num::NonZeroU32;
+
+use anyhow::Context;
+use compact_str::{CompactString, ToCompactString};
+use fnv::{FnvBuildHasher, FnvHashMap};
+use indexmap::IndexMap;
+use kv_axum_util::{ApiResult, JsonString, api_err, api_json, api_ok, bean, if_else, now_str_into};
+use localtime::LocalDateTime;
+use smallvec::SmallVec;
 
 use crate::{
-    appvars,
+    APP_NAME, APP_VER,
+    appconf::AppConf,
+    appvars::{APP_VAR, RATE_LIMITER_STATE},
     auth::JwtClaims,
-    db, dict,
-    proxy::{self, ServiceGroup},
-    ratelimit::RateLimiter,
-    statics::StaticVal,
+    db, dict, efmt, err, proxy,
+    rate_limit::{RateLimitCfg, RateLimiterType},
+    utils,
 };
-use base64::{Engine, engine::general_purpose};
-use compact_str::{CompactString, format_compact};
-use httpserver::{HttpContext, HttpResponse, HttpServer, Resp, http_bail};
-use localtime::LocalDateTime;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-pub static RATE_LIMITER: StaticVal<Arc<RateLimiter>> = StaticVal::new();
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RegRequest {
-    endpoint: CompactString,
-    ttl: Option<u32>,
-    path: Option<CompactString>,
-    paths: Option<Vec<CompactString>>,
+#[bean(deser)]
+pub struct SimpleQueryReq {
+    pub q: Option<String>,
 }
 
-pub fn register_apis(srv: &mut HttpServer, gw_path: &str) {
-    httpserver::register_apis!(srv, gw_path,
-        "ping": ping,
-        "ping/*": ping,
-        "token": token,
-        "blacklist": blacklist,
-        "status": status,
-        "query": query,
-        "query/*": query,
-        "reg": reg,
-        "unreg": unreg,
-        "cfg": cfg,
-        "cfg/*": cfg,
-        "recfg": recfg,
-        "rate": rate,
-        "rates": rates,
-    );
+#[bean(deser)]
+pub struct PingReq {
+    pub reply: Option<String>,
 }
 
-/// 服务测试，测试服务是否存活
-pub async fn ping(mut ctx: HttpContext) -> HttpResponse {
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Res {
-        reply: CompactString,
-        now: LocalDateTime,
-        server: CompactString,
-        ip: CompactString,
-    }
+/// ping
+pub fn ping(reply: &str, ip: &str) -> JsonString {
+    let mut dt = SmallVec::<[u8; 32]>::new();
+    now_str_into(&mut dt);
+    let dt_str = unsafe { std::str::from_utf8_unchecked(&dt) };
 
-    let ip = format_compact!("{}", ctx.addr);
-    log::info!("ping from: {}", ip);
-
-    let reply = match ctx.get_param_from_multi("reply", Some(0)).await {
-        Ok(Some(v)) => v,
-        _ => CompactString::new("pong"),
-    };
-
-    Resp::ok(&Res {
+    api_json!(
+        256,
+        r#"{{"server":"{}/{}","reply":"{}","ip":"{}","now":"{}"}}"#,
+        APP_NAME,
+        APP_VER,
         reply,
-        now: LocalDateTime::now(),
-        server: format_compact!("{}/{}", crate::APP_NAME, crate::APP_VER),
         ip,
-    })
+        dt_str
+    )
 }
 
-/// 生成token，生成jwt格式token
-pub async fn token(mut ctx: HttpContext) -> HttpResponse {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Req {
-        uid: u32,
-    }
-
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Res {
-        token: String,
-    }
-
-    let av = appvars::get();
-    if av.jwt_key.is_empty() {
-        return Resp::fail("jwt token generation is not supported");
-    }
-
-    let param: Req = ctx.parse_json().await?;
-
-    let mut buf = itoa::Buffer::new();
-    let uid = Some(CompactString::new(buf.format(param.uid)));
-    let iss = Some(av.jwt_issuer.clone());
-    let exp = Some(kjwt::unix_timestamp_after(av.jwt_ttl as u64)?);
-    let claims = JwtClaims { iss, exp, uid };
-    let claims_json = serde_json::to_string(&claims)?;
-    let token = kjwt::encode_raw(&claims_json, &av.jwt_key)?;
-
-    Resp::ok(&Res { token })
-}
-
-/// 将token加入黑名单
-pub async fn blacklist(mut ctx: HttpContext) -> HttpResponse {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Req {
-        token: String,
-    }
-
-    let av = appvars::get();
-    if av.jwt_key.is_empty() {
-        http_bail!("Not Support Jwt Token");
-    }
-    if !db::is_valid() {
-        http_bail!("Not support check invalid token");
-    }
-
-    let param: Req = ctx.parse_json().await?;
-    log::info!("set token {} to blacklist", param.token);
-
-    if let Some((sign, exp)) = parse_token_sign_exp(&param.token) {
-        db::put(sign, exp)?;
-    }
-
-    Resp::ok_empty()
+#[bean(ser)]
+pub struct StatusRes {
+    /// 应用启动时间
+    startup: LocalDateTime,
+    /// 服务过期时间（单位：秒）
+    service_ttl: u64,
+    /// 有效服务列表
+    services: proxy::EndPointDisplayMap,
 }
 
 /// 服务状态
-pub async fn status(_ctx: HttpContext) -> HttpResponse {
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Res {
-        startup: LocalDateTime,      // 应用启动时间
-        service_ttl: u64,            // 服务过期时间（单位：秒）
-        services: Vec<ServiceGroup>, // 有效服务列表
-    }
+pub fn status() -> ApiResult<StatusRes> {
+    let av = APP_VAR.get();
 
-    let app_global = appvars::get();
-
-    Resp::ok(&Res {
-        startup: LocalDateTime::from_unix_timestamp(app_global.startup_time as i64),
-        service_ttl: app_global.heart_break_live_time as u64,
-        services: proxy::service_status(),
+    api_ok!(StatusRes {
+        startup: LocalDateTime::from_unix_timestamp(av.startup_time as i64),
+        service_ttl: av.heartbeat_interval as u64,
+        services: proxy::service_list(),
     })
 }
 
+#[bean(ser)]
+pub struct TokenRes {
+    pub token: String,
+}
+
+/// 生成token，生成jwt格式token
+pub fn token(uid: u32) -> ApiResult<TokenRes> {
+    let ac = AppConf::get();
+    if ac.jwt_key.is_empty() {
+        api_err!("jwt token generation is not supported");
+    }
+
+    let iss = &ac.jwt_iss;
+    let iss = if_else!(iss.is_empty(), None, Some(CompactString::new(iss)));
+    let exp = kjwt::unix_timestamp_after(APP_VAR.get().jwt_ttl as u64)
+        .map_err(|e| err!("无法生成unix timestamp: {:?}", e))?;
+    let claims = JwtClaims { iss, exp, uid };
+
+    let mut buf = SmallVec::<[u8; 256]>::new();
+    serde_json::to_writer(&mut buf, &claims).with_context(|| efmt!("json序列化失败"))?;
+    let claims_json = unsafe { std::str::from_utf8_unchecked(&buf) };
+    let token =
+        kjwt::encode_raw(claims_json, &ac.jwt_key).map_err(|e| err!("编码jwt失败: {:?}", e))?;
+
+    api_ok!(TokenRes { token })
+}
+
+#[bean(deser)]
+pub struct BlacklistReq {
+    pub token: String,
+}
+
+/// 将token加入黑名单
+pub fn blacklist(token: &str) -> ApiResult<()> {
+    let ac = AppConf::get();
+    if ac.jwt_key.is_empty() {
+        api_err!("jwt token generation is not supported");
+    }
+
+    if let Some((sign, exp)) = utils::parse_token_sign_exp(token) {
+        db::put(sign, exp)?;
+    }
+
+    api_ok!()
+}
+
+#[bean(deser)]
+pub struct QueryReq {
+    /// 逗号分隔的路径列表
+    pub paths: String,
+}
+
 /// 注册服务查询
-pub async fn query(mut ctx: HttpContext) -> HttpResponse {
-    #[derive(Deserialize, Default)]
-    #[serde(rename_all = "camelCase")]
-    struct Req {
-        path: Option<String>,
-        paths: Option<Vec<String>>,
-    }
-
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct SvrInfoItem {
-        path: String,
-        services: Vec<proxy::GroupItem>,
-    }
-
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Res {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        services: Option<Vec<proxy::GroupItem>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        list: Option<Vec<SvrInfoItem>>,
-    }
-
-    let mut param = ctx.parse_json_opt::<Req>().await?.unwrap_or_default();
-
-    // body中没有，尝试从路径中读取
-    if param.path.is_none() {
-        if let Some(s) = ctx.get_path_param(0) {
-            param.path = Some(String::from(s));
-        }
-    }
-
-    if param.path.is_none() && param.paths.is_none() {
-        return Resp::fail("param path and paths not find");
-    }
-
-    // 优先使用path参数
-    if let Some(path) = &param.path {
-        log::info!("查找 {path} 对应的服务");
-        let services = proxy::service_query(path);
-        return Resp::ok(&Res {
-            path: param.path,
-            services,
-            list: None,
-        });
-    }
-
+pub fn query(paths: &str) -> ApiResult<proxy::EndPointDisplayMap> {
     // 没有path参数，则使用paths参数
-    if let Some(paths) = param.paths {
-        let mut list = Vec::with_capacity(paths.len());
-        for path in paths {
-            if let Some(services) = proxy::service_query(&path) {
-                list.push(SvrInfoItem { path, services });
-            }
+    let mut map = FnvHashMap::with_capacity_and_hasher(0, Default::default());
+    for path in paths.split(',') {
+        if let Some(services) = proxy::service_query(path) {
+            map.insert(path.to_compact_string(), services);
         }
-        return Resp::ok(&Res {
-            path: None,
-            services: None,
-            list: Some(list),
-        });
     }
 
-    Resp::ok_empty()
+    api_ok!(map)
+}
+
+#[bean(deser)]
+pub struct RegReq {
+    endpoint: CompactString,
+    ttl: u32,
+    paths: String,
 }
 
 /// 注册服务(同时也作为心跳服务使用)
-pub async fn reg(mut ctx: HttpContext) -> HttpResponse {
-    type Req = RegRequest;
-
-    let param = ctx.parse_json::<Req>().await?;
-    if param.path.is_none() && param.paths.is_none() {
-        return Resp::fail("param path and paths not find");
-    }
-
-    let ttl = param.ttl.unwrap_or_else(|| appvars::get().heart_break_live_time);
-
-    // 优先使用path参数进行注册
-    if let Some(path) = &param.path {
-        if proxy::register_service(path, &param.endpoint, ttl) {
-            log::info!("service[{} => {}] registration successful", param.endpoint, path,);
-        }
-    }
-
+pub fn reg(param: RegReq) -> ApiResult<()> {
     // path参数为空时使用paths参数进行注册
-    if let Some(paths) = &param.paths {
-        for path in paths {
-            if proxy::register_service(path, &param.endpoint, ttl) {
-                log::info!("service[{} => {}] registration successful", param.endpoint, path);
-            }
+    for path in param.paths.split(',') {
+        if proxy::register_service(path, &param.endpoint, param.ttl) {
+            tracing::debug!(endpoint = %param.endpoint, path = %path, "服务注册成功");
         }
     }
 
-    Resp::ok_empty()
+    api_ok!()
+}
+
+#[bean(deser)]
+pub struct UnregReq {
+    pub endpoint: CompactString,
 }
 
 /// 取消服务注册
-pub async fn unreg(mut ctx: HttpContext) -> HttpResponse {
-    type Req = RegRequest;
+pub fn unreg(endpoint: &str) -> ApiResult<()> {
+    proxy::unregister_service(endpoint);
+    api_ok!()
+}
 
-    let param = ctx.parse_json::<Req>().await?;
+#[bean(deser)]
+pub struct CfgReq {
+    /// 逗号分隔的路径列表
+    pub keys: String,
+}
 
-    if param.path.is_none() && param.paths.is_none() {
-        return Resp::fail("param path and paths not find");
-    }
-
-    let endpoint = &param.endpoint;
-
-    if let Some(path) = &param.path {
-        proxy::unregister_service(path, endpoint);
-        log::info!("unregister service[{}: {}]", path, endpoint);
-    }
-
-    if let Some(paths) = &param.paths {
-        for path in paths {
-            proxy::unregister_service(path, endpoint);
-            log::info!("unregister server[{}: {}]", path, endpoint);
-        }
-    }
-
-    Resp::ok_empty()
+#[bean(ser)]
+pub struct CfgRes {
+    pub cfgs: FnvHashMap<String, CompactString>,
 }
 
 /// 获取配置信息
-pub async fn cfg(mut ctx: HttpContext) -> HttpResponse {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Req {
-        key: Option<String>,
-        keys: Option<Vec<String>>,
-    }
+pub async fn cfg(keys: &str) -> ApiResult<CfgRes> {
+    let mut map = FnvHashMap::with_capacity_and_hasher(64, Default::default());
 
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Res {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        config: Option<dict::DictItems>,
-    }
-
-    let mut param = match ctx.parse_json_opt::<Req>().await? {
-        Some(v) => v,
-        None => Req {
-            key: None,
-            keys: None,
-        },
-    };
-
-    if param.key.is_none() {
-        if let Some(key) = ctx.get_path_param(0) {
-            param.key = Some(String::from(key));
-        }
-    }
-
-    if param.key.is_none() && param.keys.is_none() {
-        return Resp::fail("param group or groups not find");
-    }
-
-    let config = if let Some(key) = param.key {
-        dict::query(&key)
-    } else {
-        let mut cfgs = Vec::new();
-        for k in param.keys.unwrap() {
-            if let Some(items) = dict::query(&k) {
-                cfgs.push(items);
+    for key in keys.split(',') {
+        let list = dict::query(key).await;
+        if !list.is_empty() {
+            for (k, v) in list {
+                map.insert(k, v);
             }
         }
-        Some(cfgs.concat())
-    };
+    }
 
-    Resp::ok(&Res { config })
+    api_ok!(CfgRes { cfgs: map })
 }
 
 /// 重新加载配置信息
-pub async fn recfg(_ctx: HttpContext) -> HttpResponse {
-    let av = appvars::get();
-    if !av.dict_file.is_empty() {
-        dict::load(&av.dict_file).unwrap();
-        log::info!("dict-file reload completed");
-        Resp::ok_empty()
+pub async fn recfg() -> ApiResult<()> {
+    let df = &AppConf::get().dict_file;
+    if !df.is_empty() {
+        match dict::load(df).await {
+            Ok(_) => {
+                tracing::info!(dict_file = %df, "加载公共配置完成");
+                api_ok!()
+            },
+            Err(e) => {
+                tracing::error!(dict_file = %df, err = %e, "重新加载公共配置失败");
+                api_err!()
+            },
+        }
     } else {
-        log::error!("reload dict-file error: arg dict-file is no specified");
-        Resp::fail("arg dict-file no specified")
+        tracing::error!("重新加载公共配置失败, 未配置公共配置的文件名");
+        api_err!("api被禁用")
     }
 }
 
-/// 设置接口限流，rate为毫秒为单位的令牌产生速率，例如1000表示每秒产生1个令牌
-/// rate为0时，表示删除该限流器
-pub async fn rate(mut ctx: HttpContext) -> HttpResponse {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Req {
-        path: String,
-        rate: u64,
+#[bean(deser)]
+pub struct RateReq {
+    /// api接口路径
+    pub path: CompactString,
+    /// 限速器类型, 0: 全局, 1: IP限速, 2: 用户Id限速
+    pub rtype: u32,
+    /// 每秒增加的令牌数, > 1 时, seconds 无效
+    pub per_second: NonZeroU32,
+    /// per_second == 1 时, 表示每 seconds 增加 1 个令牌
+    pub seconds: NonZeroU32,
+    /// 允许突发流量的令牌数
+    pub allow_burst: NonZeroU32,
+}
+
+/// 设置接口限流
+///
+/// ### Arguments:
+/// * `rate_req`: 限流参数
+pub fn rate(rate_req: RateReq) -> ApiResult<()> {
+    if rate_req.rtype > 2 {
+        api_err!(format!("限速器类型必须是 0, 1 或者 2"));
     }
 
-    let param = ctx.parse_json::<Req>().await?;
-
-    let rate_limiter = RATE_LIMITER.get();
-    if param.rate == 0 {
-        rate_limiter.delete(&param.path);
+    if rate_req.allow_burst.get() == 0 {
+        RATE_LIMITER_STATE.remove(&rate_req.path);
     } else {
-        rate_limiter.insert(param.path, Duration::from_millis(param.rate));
+        let ty = RateLimiterType::from_repr(rate_req.rtype).unwrap_or_default();
+        RATE_LIMITER_STATE.add(
+            rate_req.path,
+            ty,
+            rate_req.per_second,
+            rate_req.seconds,
+            rate_req.allow_burst,
+        );
     }
 
-    Resp::ok_empty()
+    api_ok!()
+}
+
+#[bean(ser)]
+pub struct RatesRes {
+    pub rates: IndexMap<CompactString, RateLimitCfg, FnvBuildHasher>,
 }
 
 /// 查询所有限流器
-pub async fn rates(_ctx: HttpContext) -> HttpResponse {
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ResItem {
-        path: String,
-        rate: u64,
-    }
-    type Res = Vec<ResItem>;
-
-    let map = RATE_LIMITER.get().get();
-    let res: Res = map
-        .iter()
-        .map(|item| ResItem {
-            path: item.key().clone(),
-            rate: item.value().rate_limit.as_millis() as u64,
-        })
-        .collect();
-
-    Resp::ok(&res)
+pub fn rates(q: &str) -> ApiResult<RatesRes> {
+    let list = RATE_LIMITER_STATE.query(q);
+    api_ok!(RatesRes { rates: list })
 }
 
-fn parse_token_sign_exp(token: &str) -> Option<(&str, u64)> {
-    fn parse_exp(b64: &str) -> Option<u64> {
-        let bytes = general_purpose::URL_SAFE_NO_PAD.decode(b64.as_bytes());
-        if let Ok(bytes) = bytes {
-            if let Ok(claims) = serde_json::from_slice::<Value>(&bytes) {
-                if let Some(exp) = claims.get("exp") {
-                    if let Some(exp) = exp.as_u64() {
-                        return Some(exp);
-                    }
-                }
-            }
-        }
-        None
-    }
+#[bean(deser)]
+pub struct RateDelReq {
+    /// api接口路径
+    pub path: CompactString,
+}
 
-    let mut iter = token.split('.');
-    // 跳过头部
-    if iter.next().is_some() {
-        // 读取claims部分
-        if let Some(claims_b64) = iter.next() {
-            if let Some(exp) = parse_exp(claims_b64) {
-                // 读取签名部分
-                if let Some(sign) = iter.next() {
-                    return Some((sign, exp));
-                }
-            }
-        }
-    }
-    None
+/// 删除接口限流
+///
+/// ### Arguments:
+/// * `path`: 接口地址
+pub fn rate_del(path: &str) -> ApiResult<()> {
+    RATE_LIMITER_STATE.remove(path);
+    api_ok!()
 }

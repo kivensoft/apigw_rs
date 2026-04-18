@@ -9,16 +9,16 @@ impl<T> StaticVal<T> {
         Self(OnceLock::new())
     }
 
-    pub fn init(&self, value: T) {
+    pub fn init(&self, value: T, call: &str) {
         if self.0.set(value).is_err() {
-            panic!("StaticVal::init() failed");
+            panic!("StaticVal::init() failed at {}", call);
         }
     }
 
     pub fn get(&self) -> &T {
         debug_assert!(self.0.get().is_some());
         match self.0.get() {
-            Some(v) => v,
+            Some(value) => value,
             None => unsafe { std::hint::unreachable_unchecked() },
         }
     }

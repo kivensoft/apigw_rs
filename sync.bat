@@ -12,7 +12,7 @@ set /p var="Are you sure?(y/n)"
 if %var%==n goto end
 
 :loop
-    rsync -av --delete --exclude="/target/" --exclude="/.git/" %src% %dst%
+    rsync -av --delete --exclude="/target/" %src% %dst%
     if "%1" == "once" goto end
     echo waiting for synchronize folders %src% =^> %dst%
     timeout /t 600

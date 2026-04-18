@@ -1,0 +1,13 @@
+[package]
+name = "kv_redis"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["kiven <kivensoft@gmail.com>"]
+description = "async redis extension library"
+
+[dependencies]
+anyhow = "1" # 最流行的错误处理库
+itoa = "1" # 快速整数转字符串库
+redis-async = "0.18" # 一个简单的异步redis库
+url = "2" # 解析url的库

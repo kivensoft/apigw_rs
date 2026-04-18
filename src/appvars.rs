@@ -1,31 +1,34 @@
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
-use compact_str::CompactString;
+use kv_axum_util::SimpleScheduler;
+use kv_redis::RedisClient;
+
+use crate::{rate_limit::RateLimiterState, static_val::StaticVal};
 
 pub struct AppVar {
     pub startup_time: u64,
-    pub heart_break_live_time: u32,
+    pub heartbeat_interval: u32,
+    pub jwt_ttl: u32,
     pub redis_ttl: u32,
     pub use_redis: bool,
-    pub jwt_key: CompactString,
-    pub jwt_issuer: CompactString,
-    pub jwt_ttl: u32,
-    pub dict_file: CompactString,
     pub srv_conn_timeout: u32,
 }
 
-static APP_VAR: OnceLock<AppVar> = OnceLock::new();
+pub static APP_VAR: StaticVal<AppVar> = StaticVal::new();
 
-pub fn init(av: AppVar) {
-    if APP_VAR.set(av).is_err() {
-        panic!("APP_VAR already initialized");
-    }
-}
+pub static SCHEDULER: LazyLock<SimpleScheduler> = LazyLock::new(|| SimpleScheduler::new(60));
+pub static RATE_LIMITER_STATE: LazyLock<RateLimiterState> = LazyLock::new(RateLimiterState::new);
+pub static REDIS_CLIENT: StaticVal<RedisClient> = StaticVal::new();
 
-pub fn get() -> &'static AppVar {
-    debug_assert!(APP_VAR.get().is_some());
-    match APP_VAR.get() {
-        Some(v) => v,
-        None => unsafe { std::hint::unreachable_unchecked() },
-    }
-}
+pub const BANNER: &str = r#"
+    ___          _    ______      __  Kivensoft ?
+   /   |  ____  (_)  / ____/___ _/ /____ _      ______ ___  __
+  / /| | / __ \/ /  / / __/ __ `/ __/ _ \ | /| / / __ `/ / / /
+ / ___ |/ /_/ / /  / /_/ / /_/ / /_/  __/ |/ |/ / /_/ / /_/ /
+/_/  |_/ .___/_/   \____/\__,_/\__/\___/|__/|__/\__,_/\__, /
+      /_/                                            /____/
+"#;
+
+pub const APP_NAME: &str = include_str!(concat!(env!("OUT_DIR"), "/.app_name"));
+/// app版本号, 来自编译时由build.rs从cargo.toml中读取的版本号(读取内容写入.version文件)
+pub const APP_VER: &str = include_str!(concat!(env!("OUT_DIR"), "/.version"));

@@ -1,48 +1,62 @@
 //! linux service register
 
-#[cfg(not(target_os = "linux"))]
-pub fn install() {
-    println!("Windows type services are not supported!");
-    println!("Please use third-party tools to install the application as a Windows service");
-}
+use crate::APP_NAME;
 
-#[cfg(target_os = "linux")]
 pub fn install() {
-    use std::path::Path;
-
     const SYSTEMD_CONTENT: &str = r#"
+        # /etc/systemd/system/?.service
         # apigw service
         # =======================
-        #
+
         [Unit]
         Description=api gateway service
         After=network.target
 
         [Service]
+        # 【关键】指定运行用户，实现权限隔离
+        #User=app_user
+        #Group=app_user
+
         Type=simple
+        # 工作目录
+        WorkingDirectory=/opt/?
+
+        # 【核心】启动命令
         ExecStart=? -c ?.conf
+
+        # 崩溃自动重启配置
+        #Restart=always
+        #RestartSec=30
+
+        #  重启命令
         #ExecReload=/bin/kill -HUP $MAINPID
         KillMode=process
-        #Restart=on-failure
 
         [Install]
         WantedBy=multi-user.target
+
+        # 重载配置
+        # systemctl daemon-reload
+        # 设置开机自启
+        # systemctl enable ?
+        # 启动服务
+        # systemctl start ?
     "#;
 
-    let mut args = std::env::args();
-    let prog = args.next().unwrap();
-    let prog = Path::new(&prog);
-    let prog = prog.canonicalize().unwrap();
-    let prog_str = prog.to_str().unwrap();
-
     // 替换"?"为实际的参数内容
-    let mut systemd_content = String::with_capacity(SYSTEMD_CONTENT.len() + 128);
-    let mut split = SYSTEMD_CONTENT.split('?');
-    systemd_content.push_str(split.next().unwrap());
-    systemd_content.push_str(prog_str);
-    systemd_content.push_str(split.next().unwrap());
-    systemd_content.push_str(prog_str);
-    systemd_content.push_str(split.next().unwrap());
+    let slen = SYSTEMD_CONTENT.len() + APP_NAME.len() * SYSTEMD_CONTENT.matches('?').count();
+    let mut systemd_content = String::with_capacity(slen);
+
+    let mut parts = SYSTEMD_CONTENT.split('?');
+    // 添加第一个部分
+    if let Some(first) = parts.next() {
+        systemd_content.push_str(first);
+    }
+    // 后续每个部分前添加 app_name
+    for part in parts {
+        systemd_content.push_str(APP_NAME);
+        systemd_content.push_str(part);
+    }
 
     // 删除前后空白行和每行的前导空白符
     let mut content = String::with_capacity(systemd_content.len());
@@ -52,14 +66,6 @@ pub fn install() {
     }
     content.truncate(content.len() - 1);
 
-    // 写入服务配置文件
-    let prog_noext = Path::new(prog.file_name().unwrap()).file_stem().unwrap();
-    let prog_noext = prog_noext.to_str().unwrap();
-    let path = format!("/lib/systemd/systemd/{}.service", prog_noext);
-    let path = Path::new(&path);
-    std::fs::write(&path, content).unwrap();
-
-    let path_str = path.to_str().unwrap();
-    println!("Generating service configuration file \"{}\" is complete.", path_str);
-    println!("Please use \"systemctl start {}\" to start the service", prog_noext);
+    // 在控制台输出服务配置文件内容
+    println!("{}", content);
 }
