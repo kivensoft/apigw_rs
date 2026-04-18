@@ -1,0 +1,182 @@
+[2026-04-19 02:02:50.514] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:02:50.519] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:02:50.520] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:02:55.312] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:02:55.312] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:03:02.291] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:03:02.291] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:11:09.318] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:11:09.323] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:11:09.324] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:11:12.029] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:11:12.030] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:11:12.030] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:11:12.030] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]=""}
+[2026-04-19 02:13:54.209] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:13:54.210] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:13:57.389] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:13:57.394] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:13:57.395] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:13:59.688] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:13:59.688] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:13:59.688] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:13:59.689] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]=""}
+[2026-04-19 02:14:08.872] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:14:08.873] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:14:47.425] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:14:47.431] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:14:47.433] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:14:49.332] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:14:49.333] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:14:49.333] [WARN ] [kv_axum_util::logging_resp] 【77777777777】 
+[2026-04-19 02:14:49.333] [WARN ] [kv_axum_util::logging_resp] 【xxxxx】 {[data]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:14:49\"}}"}
+[2026-04-19 02:14:49.334] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:14:49.334] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:14:49\"}}"}
+[2026-04-19 02:16:39.286] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:16:39.287] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:16:42.714] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:16:42.719] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:16:42.720] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:16:45.640] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:16:45.641] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:16:45.641] [WARN ] [kv_axum_util::logging_resp] 【77777777777】 
+[2026-04-19 02:16:45.641] [WARN ] [kv_axum_util::logging_resp] 【xxxxx】 {[data]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:16:45\"}}"}
+[2026-04-19 02:16:45.641] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:16:45.642] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:16:45\"}}"}
+[2026-04-19 02:17:00.356] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:17:00.357] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:17:02.737] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:17:02.741] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:17:02.742] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:17:10.079] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping/"}
+[2026-04-19 02:17:10.080] [DEBUG] [REQ{id=1}] [apigw::http_apis] 【网关未提供该接口】 {[path]="/gw/ping/"}
+[2026-04-19 02:17:10.080] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="1ms", [status]="404"}
+[2026-04-19 02:17:10.081] [WARN ] [kv_axum_util::logging_resp] 【77777777777】 
+[2026-04-19 02:17:10.081] [WARN ] [kv_axum_util::logging_resp] 【xxxxx】 {[data]="{\"code\":404,\"msg\":\"Not Found\"}"}
+[2026-04-19 02:17:10.082] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:17:10.082] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":404,\"msg\":\"Not Found\"}"}
+[2026-04-19 02:18:32.290] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:18:32.290] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:19:20.444] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:19:20.450] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:19:20.451] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:19:23.888] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:19:23.888] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:19:23.888] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:19:23.888] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:19:23\"}}"}
+[2026-04-19 02:19:32.025] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:19:32.026] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:29:41.577] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:29:41.583] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:29:41.584] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:29:44.530] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:29:44.530] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:29:44.530] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:29:44.531] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:29:44\"}}"}
+[2026-04-19 02:30:27.186] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:30:27.187] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:30:29.885] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:30:29.891] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:30:29.892] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:30:32.544] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:30:32.544] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:30:32.545] [DEBUG] [kv_axum_util::logging_resp] 【poll_next】 {[span]="Span { none: true }"}
+[2026-04-19 02:30:32.545] [DEBUG] [kv_axum_util::logging_resp] 【poll_next】 {[span]="Span { none: true }"}
+[2026-04-19 02:30:32.545] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:30:32.546] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:30:32\"}}"}
+[2026-04-19 02:30:55.484] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:30:55.484] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:31:27.247] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:31:27.252] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:31:27.253] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:31:29.426] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:31:29.426] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:31:29.426] [DEBUG] [kv_axum_util::logging_resp] 【xxxxxxxxx】 {[span]="Span { none: true }"}
+[2026-04-19 02:31:29.427] [DEBUG] [kv_axum_util::logging_resp] 【poll_next】 {[span]="Span { none: true }"}
+[2026-04-19 02:31:29.427] [DEBUG] [kv_axum_util::logging_resp] 【poll_next】 {[span]="Span { none: true }"}
+[2026-04-19 02:31:29.427] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:31:29.428] [INFO ] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:31:29\"}}"}
+[2026-04-19 02:38:09.388] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:38:09.389] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:38:13.707] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:38:13.712] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:38:13.713] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:38:16.684] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:38:16.684] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:38:16.685] [DEBUG] [kv_axum_util::logging_resp] 【poll_next】 {[span]="Span { name: \"REQ\", level: Level(Debug), target: \"kv_axum_util::logging_resp\", id: Id(2), module_path: \"kv_axum_util::logging_resp\", line: 61, file: \"kv_axum_util\\\\src\\\\logging_resp.rs\" }"}
+[2026-04-19 02:38:16.685] [DEBUG] [kv_axum_util::logging_resp] 【poll_next】 {[span]="Span { name: \"REQ\", level: Level(Debug), target: \"kv_axum_util::logging_resp\", id: Id(2251799813685250), module_path: \"kv_axum_util::logging_resp\", line: 61, file: \"kv_axum_util\\\\src\\\\logging_resp.rs\" }"}
+[2026-04-19 02:38:16.685] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:38:16.685] [INFO ] [REQ{id=1}] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:38:16\"}}"}
+[2026-04-19 02:39:11.213] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:39:11.213] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:39:27.100] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:39:27.106] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:39:27.108] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:39:28.769] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:39:28.769] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:39:28.770] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:39:28.770] [INFO ] [REQ{id=1}] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:39:28\"}}"}
+[2026-04-19 02:41:34.504] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:41:34.504] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:41:38.115] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:41:38.120] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:41:38.121] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:41:40.663] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:41:40.663] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0ms", [status]="200"}
+[2026-04-19 02:41:40.664] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:41:40.664] [INFO ] [REQ{id=1}] [kv_axum_util::logging_resp] 【响应预览】 {[preview]="{\"code\":200,\"data\":{\"server\":\"apigw/0.9.11\",\"reply\":\"pong\",\"ip\":\"127.0.0.1\",\"now\":\"2026-04-19 02:41:40\"}}"}
+[2026-04-19 02:41:40.664] [DEBUG] [REQ{id=1}] [kv_axum_util::logging_resp] 【响应完成】 
+[2026-04-19 02:50:38.263] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:50:38.263] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:50:41.886] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:50:41.891] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:50:41.892] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:50:46.124] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:50:46.125] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="1ms", [status]="200"}
+[2026-04-19 02:50:46.125] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:50:46.125] [DEBUG] [REQ{id=1}] [kv_axum_util::logging_resp] 【响应预览: {"code":200,"data":{"server":"apigw/0.9.11","reply":"pong","ip":"127.0.0.1","now":"2026-04-19 02:50:46"}}】 
+[2026-04-19 02:54:17.908] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:54:17.908] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:54:21.097] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:54:21.102] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:54:21.103] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:54:23.295] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:54:23.296] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="666µs", [status]="200"}
+[2026-04-19 02:54:23.296] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:54:23.296] [DEBUG] [REQ{id=1}] [kv_axum_util::logging_resp] 【响应预览: {"code":200,"data":{"server":"apigw/0.9.11","reply":"pong","ip":"127.0.0.1","now":"2026-04-19 02:54:23"}}】 
+[2026-04-19 02:54:54.822] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:54:54.822] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:54:57.906] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:54:57.911] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:54:57.912] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:54:59.534] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:54:59.535] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0", [status]="200"}
+[2026-04-19 02:54:59.535] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:54:59.535] [DEBUG] [REQ{id=1}] [kv_axum_util::logging_resp] 【响应预览: {"code":200,"data":{"server":"apigw/0.9.11","reply":"pong","ip":"127.0.0.1","now":"2026-04-19 02:54:59"}}】 
+[2026-04-19 02:55:14.161] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:55:14.161] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:55:17.263] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:55:17.268] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:55:17.269] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:57:02.024] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:57:02.024] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:57:05.053] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:57:05.058] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:57:05.059] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:57:46.935] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 02:57:46.935] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 
+[2026-04-19 02:57:49.702] [INFO ] [apigw::dict] 【加载公共配置成功】 {[path]="dict.cfg"}
+[2026-04-19 02:57:49.707] [INFO ] [apigw::routes] 【网关接口上下文地址】 {[gw]="/gw"}
+[2026-04-19 02:57:49.708] [INFO ] [apigw] 【🚀 apigw 0.9.11 running on http://127.0.0.1:6400】 
+[2026-04-19 02:57:58.529] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/ping"}
+[2026-04-19 02:57:58.529] [DEBUG] [REQ{id=1}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="0 ms", [status]="200"}
+[2026-04-19 02:57:58.530] [DEBUG] [REQ{id=1}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:57:58.530] [DEBUG] [REQ{id=1}] [kv_axum_util::logging_resp] 【响应预览: {"code":200,"data":{"server":"apigw/0.9.11","reply":"pong","ip":"127.0.0.1","now":"2026-04-19 02:57:58"}}】 
+[2026-04-19 02:58:03.747] [DEBUG] [REQ{id=2}] [kv_axum_util::tracing_ext] 【新的请求】 {[path]="/gw/reg"}
+[2026-04-19 02:58:03.747] [DEBUG] [REQ{id=2}] [apigw::proxy] 【代理服务新注册成功】 {[path]="/api", [endpoint]="127.0.0.1:3003", [ttl]="0"}
+[2026-04-19 02:58:03.748] [DEBUG] [REQ{id=2}] [apigw::apis] 【服务注册成功】 {[endpoint]="127.0.0.1:3003", [path]="/api"}
+[2026-04-19 02:58:03.748] [DEBUG] [REQ{id=2}] [kv_axum_util::tracing_ext] 【请求处理完成】 {[latency]="1 ms", [status]="200"}
+[2026-04-19 02:58:03.748] [DEBUG] [REQ{id=2}] [tower_http::trace::on_eos] 【end of stream】 {[stream_duration]="0 ms"}
+[2026-04-19 02:58:03.749] [DEBUG] [REQ{id=2}] [kv_axum_util::logging_resp] 【响应预览: {"code":200}】 
+[2026-04-19 03:00:00.028] [INFO ] [apigw] 【👌 收到 Ctrl+C 信号, 正在关闭应用...】 
+[2026-04-19 03:00:00.029] [INFO ] [apigw] 【⚠️ 收到关闭http服务信号】 

@@ -6,8 +6,10 @@
 use std::sync::atomic::AtomicU32;
 
 use axum::{
-    extract::{FromRequestParts, Request, State}, http::request::Parts,
-    middleware::Next, response::Response
+    extract::{FromRequestParts, Request, State},
+    http::request::Parts,
+    middleware::Next,
+    response::Response,
 };
 use rclite::Arc;
 
@@ -54,7 +56,7 @@ impl ReqIdGenerator {
 
 /// 中间件, 为每个请求注入递增的 ReqId
 pub async fn req_id_middleware(
-    State(generator): State<ReqIdGenerator>, mut req: Request, next: Next
+    State(generator): State<ReqIdGenerator>, mut req: Request, next: Next,
 ) -> Response {
     // 生成新的请求ID
     let req_id = generator.next();

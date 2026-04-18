@@ -30,8 +30,8 @@ impl Default for AppConf {
         log_file.push_str(".log");
 
         Self {
-            log_filter: "debug".to_string(),
-            log_file,
+            log_filter: "debug,redis_async::reconnect=warn".to_string(),
+            log_file: "".to_string(),
             no_console: false,
             install: false,
             listen: "127.0.0.1:6400".to_string(),

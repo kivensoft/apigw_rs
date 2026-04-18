@@ -5,7 +5,6 @@ mod auth;
 mod db;
 mod dict;
 mod http_apis;
-mod logging_body;
 mod macros;
 mod path_iter;
 mod proxy;
@@ -21,7 +20,7 @@ use anyhow::Result;
 use appvars::AppVar;
 use axum::middleware::from_fn_with_state;
 use compact_str::CompactString;
-use kv_axum_util::{ReqIdGenerator, custom_trace_layer, req_id_middleware};
+use kv_axum_util::{ReqIdGenerator, capture_response_body, custom_trace_layer, req_id_middleware};
 use kv_redis::RedisClient;
 use rclite::Arc;
 use smallstr::SmallString;
@@ -99,6 +98,11 @@ fn parse_cfg() -> Option<(AppConf, AppVar)> {
     // 修复网关上下文地址
     ac.gw_prefix = utils::normalize_path(&ac.gw_prefix, true);
 
+    // 修复监听地址
+    if !ac.listen.is_empty() && ac.listen.as_bytes()[0] == b':' {
+        ac.listen.insert_str(0, "0.0.0.0");
+    };
+
     let av = AppVar {
         startup_time: localtime::unix_timestamp(),
         heartbeat_interval: ac.expire_time.parse().expect(arg_err!("expire-time")),
@@ -106,10 +110,6 @@ fn parse_cfg() -> Option<(AppConf, AppVar)> {
         redis_ttl: ac.redis_ttl.parse().expect(arg_err!("redis-ttl")),
         use_redis: !ac.redis.is_empty(),
         srv_conn_timeout: ac.conn_timeout.parse().expect(arg_err!("conn-timeout")),
-    };
-
-    if !ac.listen.is_empty() && ac.listen.as_bytes()[0] == b':' {
-        ac.listen.insert_str(0, "0.0.0.0");
     };
 
     if let Some((s1, s2)) = BANNER.split_once('?') {
@@ -181,6 +181,8 @@ async fn async_main(ac: AppConf, av: AppVar) -> Result<()> {
         .layer(from_fn_with_state(Arc::new(auth_state), auth_middleware))
         // 允许跨域访问请求
         .layer(CorsLayer::permissive())
+        // 捕获输出结果
+        .layer(from_fn_with_state(256, capture_response_body))
         // 为每个请求生成自增的请求id
         .layer(from_fn_with_state(ReqIdGenerator::new(), req_id_middleware));
 

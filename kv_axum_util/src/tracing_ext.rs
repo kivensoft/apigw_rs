@@ -1,6 +1,10 @@
-use std::{fmt::Write as _, sync::atomic::{AtomicU32, Ordering}};
+use std::{
+    fmt::Write as _,
+    sync::atomic::{AtomicU32, Ordering},
+    time::Duration,
+};
 
-use axum::http::Request;
+use axum::{http::Request, response::Response};
 use compact_str::CompactString;
 use rclite::Arc;
 use smallstr::SmallString;
@@ -8,17 +12,14 @@ use smallvec::SmallVec;
 use time::{OffsetDateTime, format_description::BorrowedFormatItem, macros::format_description};
 use tower_http::{
     classify::{ServerErrorsAsFailures, SharedClassifier},
-    trace::{MakeSpan, OnRequest, TraceLayer},
+    trace::{MakeSpan, OnRequest, OnResponse, TraceLayer},
 };
-use tracing::{
-    Event, Level, Span, Subscriber,
-    field::{Field, ValueSet, Visit},
-};
+use tracing::{Event, Level, Span, Subscriber, field::{Field, Visit}};
 use tracing_appender::{non_blocking::WorkerGuard, rolling};
 use tracing_log::NormalizeEvent;
 use tracing_subscriber::{
     EnvFilter, Layer,
-    fmt::{self, FmtContext, FormatEvent, FormatFields, format::Writer},
+    fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields, format::Writer},
     layer::SubscriberExt,
     registry::LookupSpan,
     util::SubscriberInitExt,
@@ -68,10 +69,12 @@ pub fn now_str_into<W: std::io::Write>(output: &mut W) {
 
 pub type ClassIfier = SharedClassifier<ServerErrorsAsFailures>;
 
-pub fn custom_trace_layer() -> TraceLayer<ClassIfier, CustomMakeSpan, CustomOnRequest> {
+pub fn custom_trace_layer()
+-> TraceLayer<ClassIfier, CustomMakeSpan, CustomOnRequest, CustomOnResponse> {
     TraceLayer::new_for_http()
         .make_span_with(CustomMakeSpan::new())
         .on_request(CustomOnRequest)
+        .on_response(CustomOnResponse)
 }
 
 // 自定义 OnRequest - 输出 started processing request
@@ -79,11 +82,27 @@ pub fn custom_trace_layer() -> TraceLayer<ClassIfier, CustomMakeSpan, CustomOnRe
 pub struct CustomOnRequest;
 
 impl<B> OnRequest<B> for CustomOnRequest {
-    fn on_request(&mut self, request: &axum::http::Request<B>, _span: &Span) {
+    fn on_request(&mut self, request: &Request<B>, _span: &Span) {
         tracing::debug!(
             // target: "tower_http::trace::on_request",
             path = %request.uri().path(),
-            "started processing request"
+            "新的请求"
+        );
+    }
+}
+
+#[derive(Clone)]
+pub struct CustomOnResponse;
+
+impl<B> OnResponse<B> for CustomOnResponse {
+    fn on_response(self, response: &Response<B>, latency: Duration, _span: &Span) {
+        let mut buf = itoa::Buffer::new();
+        let ms = buf.format(latency.as_millis());
+        tracing::debug!(
+            // target: "tower_http::trace::on_request",
+            latency = format!("{ms} ms"),
+            status = response.status().as_u16(),
+            "请求处理完成"
         );
     }
 }
@@ -130,8 +149,8 @@ impl<B> MakeSpan<B> for CustomMakeSpan {
         let req_id = req.extensions().get::<ReqId>();
         let id = req_id.map(|id| id.0).unwrap_or(0);
 
-        // info_span 表示只要缺省日志级别只要大于等于info, 该span就会被创建
-        tracing::info_span!(
+        // info_span 表示只要缺省日志级别只要大于等于error, 该span就会被创建
+        tracing::error_span!(
             "REQ",
             %id,
             // method = %request.method(),
@@ -230,7 +249,7 @@ impl TracingBuilder {
 
         // ========== 控制台层：自定义格式 ==========
         let console_layer = if !self.disable_console {
-            let console_layer = fmt::layer()
+            let console_layer = tracing_subscriber::fmt::layer()
                 .event_format(CustomFormatter::new(true))
                 .with_filter(filter.clone());
             Some(console_layer)
@@ -244,13 +263,13 @@ impl TracingBuilder {
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
             if let Some(console_layer) = console_layer {
-                let file_layer = fmt::layer()
+                let file_layer = tracing_subscriber::fmt::layer()
                     .with_writer(non_blocking)
                     .event_format(CustomFormatter::new(false))
                     .with_filter(filter);
                 registry.with(console_layer).with(file_layer).init();
             } else {
-                let file_layer = fmt::layer()
+                let file_layer = tracing_subscriber::fmt::layer()
                     .with_writer(non_blocking)
                     .event_format(CustomFormatter::new(false))
                     .with_filter(filter);
@@ -270,7 +289,6 @@ impl TracingBuilder {
 
         guard
     }
-
 }
 
 struct CustomFormatter {
@@ -330,7 +348,7 @@ where
 
             // Span 字段
             let ext = span.extensions();
-            if let Some(fields) = ext.get::<fmt::FormattedFields<N>>()
+            if let Some(fields) = ext.get::<FormattedFields<N>>()
                 && !fields.is_empty()
             {
                 if self.use_ansi {
@@ -521,7 +539,6 @@ impl<'a> Iterator for SkipAnsiColorIter<'a> {
 
 // }
 
-
 type ValueStr = SmallString<[u8; 128]>;
 
 struct CollectVisitor {
@@ -531,10 +548,7 @@ struct CollectVisitor {
 
 impl CollectVisitor {
     fn new() -> Self {
-        Self {
-            message: ValueStr::new(),
-            fields: SmallVec::new(),
-        }
+        Self { message: ValueStr::new(), fields: SmallVec::new() }
     }
 
     fn is_message(field_name: &str) -> bool {
@@ -564,13 +578,21 @@ impl CollectVisitor {
         }
 
         if !self.message.is_empty() {
-            if use_ansi { wstr!("\x1b[31m"); }
+            if use_ansi {
+                wstr!("\x1b[31m");
+            }
             wch!('【');
-            if use_ansi { wstr!("\x1b[0m"); }
+            if use_ansi {
+                wstr!("\x1b[0m");
+            }
             wstr!(&self.message);
-            if use_ansi { wstr!("\x1b[31m"); }
+            if use_ansi {
+                wstr!("\x1b[31m");
+            }
             wch!('】');
-            if use_ansi { wstr!("\x1b[0m"); }
+            if use_ansi {
+                wstr!("\x1b[0m");
+            }
             wch!(' ');
         }
 
@@ -603,7 +625,6 @@ impl CollectVisitor {
             wch!('}');
         }
     }
-
 }
 
 impl Visit for CollectVisitor {
@@ -611,7 +632,6 @@ impl Visit for CollectVisitor {
         let mut vstr = ValueStr::new();
         let _ = write!(&mut vstr, "{:?}", value);
         self.push(field, vstr);
-
     }
 
     // 也可以实现其他 record_* 方法来优化显示
@@ -642,5 +662,4 @@ impl Visit for CollectVisitor {
         let _ = write!(&mut vstr, "{}", value);
         self.push(field, vstr);
     }
-
 }

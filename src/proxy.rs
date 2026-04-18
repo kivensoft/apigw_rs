@@ -11,13 +11,12 @@ use anyhow::{Context, Result};
 use axum::{
     body::Body,
     extract::Request,
-    http::{HeaderMap, HeaderValue, StatusCode, Uri},
+    http::{StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use compact_str::CompactString;
 use dashmap::DashMap;
 use fnv::FnvHashMap;
-use hyper::header;
 use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::{TokioExecutor, TokioTimer},
@@ -27,9 +26,8 @@ use localtime::LocalDateTime;
 use parking_lot::Mutex;
 use smallstr::SmallString;
 use smallvec::SmallVec;
-use tracing::Level;
 
-use crate::{appvars::APP_VAR, auth::UserId, efmt, logging_body::LoggingBody, path_iter::PathIter};
+use crate::{appvars::APP_VAR, auth::UserId, efmt, path_iter::PathIter};
 
 type ProxyClient = Client<HttpConnector, Body>;
 
@@ -53,9 +51,6 @@ struct EndpointConfig {
 type EndpointConfigVec = VecDeque<EndpointConfig>;
 /// 服务字典类型, 端点列表使用 Mutex 而不是 RwLock 是因为大部分访问都需要修改端点列表
 type ServiceMap = DashMap<CompactString, Mutex<EndpointConfigVec>>;
-
-pub static LOG_RESP_BODY: AtomicBool = AtomicBool::new(true);
-const MAX_RESP_SIZE: usize = 256;
 
 /// 已注册的服务列表
 static SERVICE_MAP: LazyLock<ServiceMap> = LazyLock::new(DashMap::new);
@@ -126,10 +121,10 @@ pub fn unregister_service(endpoint: &str) {
 
     // 记录日志
     for path in remove_from_keys {
-        tracing::debug!(path = %path, endpoint = %endpoint, "删除被代理服务成功");
+        tracing::debug!(%path, %endpoint, "删除被代理服务成功");
     }
-    for key in wait_del_keys {
-        tracing::debug!(path = %key, endpoint = %endpoint, "删除被代理服务列表为空的项成功")
+    for path in wait_del_keys {
+        tracing::debug!(%path, %endpoint, "删除被代理服务列表为空的项成功")
     }
 }
 
@@ -274,19 +269,7 @@ pub async fn proxy_handler(req: Request, rid: ReqId, uid: UserId) -> Response {
     // 发送请求到上游
     match get_client().request(new_req).await {
         Ok(res) => {
-            let (parts, incoming) = res.into_parts();
-
-            // 记录代理结果
-            tracing::info!(status = %parts.status.as_u16(), "上游服务响应");
-
-            let use_log = LOG_RESP_BODY.load(Ordering::Acquire)
-                && tracing::enabled!(Level::DEBUG)
-                && resp_is_text(&parts.headers);
-
-            // 创建流式 body，直接传递帧数据
-            let logged_body = LoggingBody::new(incoming, MAX_RESP_SIZE, use_log);
-
-            Response::from_parts(parts, Body::new(logged_body))
+            res.into_response()
         },
         Err(e) => {
             tracing::warn!(err = %e, "上游请求失败");
@@ -355,23 +338,6 @@ fn build_target_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
     buf.push_str(endpoint);
     buf.push_str(path_and_query);
     buf.parse().with_context(|| efmt!("构建 URI 失败"))
-}
-
-fn resp_is_text(headers: &HeaderMap<HeaderValue>) -> bool {
-    const TEXT_CONTENT_TYPES: [&str; 5] =
-        ["application/json", "text/html", "text/plain", "text/xml", "application/xml"];
-
-    if let Some(content_type_value) = headers.get(header::CONTENT_TYPE)
-        && let Ok(content_type) = content_type_value.to_str()
-    {
-        for ct in TEXT_CONTENT_TYPES {
-            if content_type.starts_with(ct) {
-                return true;
-            }
-        }
-    }
-
-    false
 }
 
 fn get_client() -> &'static ProxyClient {
