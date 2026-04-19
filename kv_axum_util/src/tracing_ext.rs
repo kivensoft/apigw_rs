@@ -1,7 +1,5 @@
 use std::{
-    fmt::Write as _,
-    sync::atomic::{AtomicU32, Ordering},
-    time::Duration,
+    fmt::Write as _, sync::atomic::{AtomicU32, Ordering}, time::Duration
 };
 
 use axum::{http::Request, response::Response};
@@ -25,7 +23,7 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
-use crate::{ReqId, write_json_str};
+use crate::{CompactStr, ReqId, logging_resp::ReqPath, write_json_str};
 
 /// if else ternary expression
 ///
@@ -54,13 +52,16 @@ pub const FULL_DATETIME_FORMAT: &[BorrowedFormatItem<'static>] =
 
 const MAX_SPAN_ID: u32 = 99999;
 
-pub fn now_str() -> String {
-    OffsetDateTime::now_local()
+/// 获取当前时间的时间戳, 并转为字符串返回
+pub fn now_str() -> CompactString {
+    let mut buf = CompactStr::new();
+    let _ = OffsetDateTime::now_local()
         .unwrap_or_else(|_| OffsetDateTime::now_utc())
-        .format(DATETIME_FORMAT)
-        .unwrap_or_else(|s| s.to_string())
+        .format_into(&mut buf, DATETIME_FORMAT);
+    buf.0
 }
 
+/// 获取当前时间时间戳, 并转为字符串写入output
 pub fn now_str_into<W: std::io::Write>(output: &mut W) {
     let _ = OffsetDateTime::now_local()
         .unwrap_or_else(|_| OffsetDateTime::now_utc())
@@ -83,11 +84,7 @@ pub struct CustomOnRequest;
 
 impl<B> OnRequest<B> for CustomOnRequest {
     fn on_request(&mut self, request: &Request<B>, _span: &Span) {
-        tracing::debug!(
-            // target: "tower_http::trace::on_request",
-            path = %request.uri().path(),
-            "新的请求"
-        );
+        tracing::debug!(path = %request.uri().path(), "📥新的请求");
     }
 }
 
@@ -96,14 +93,13 @@ pub struct CustomOnResponse;
 
 impl<B> OnResponse<B> for CustomOnResponse {
     fn on_response(self, response: &Response<B>, latency: Duration, _span: &Span) {
-        let mut buf = itoa::Buffer::new();
-        let ms = buf.format(latency.as_millis());
-        tracing::debug!(
-            // target: "tower_http::trace::on_request",
-            latency = format!("{ms} ms"),
-            status = response.status().as_u16(),
-            "请求处理完成"
-        );
+        let latency = format!("{} ms", latency.as_millis());
+        let status = response.status().as_u16();
+        let path = match response.extensions().get::<ReqPath>() {
+            Some(path) => &path.0,
+            None => "",
+        };
+        tracing::debug!(%path, %latency, %status, "📴请求处理完成");
     }
 }
 
@@ -218,7 +214,10 @@ impl TracingBuilder {
     }
 
     pub fn file<T: Into<CompactString>>(mut self, dir: T, file: T) -> Self {
-        self.file = Some((dir.into(), file.into()));
+        let file = file.into();
+        if !file.is_empty() {
+            self.file = Some((dir.into(), file));
+        }
         self
     }
 
@@ -455,18 +454,17 @@ impl<'a> Iterator for SkipAnsiColorIter<'a> {
     }
 }
 
-// 创建一个 Visitor 来收集字段
 // struct CustomVisitor<'a> {
 //     writer: Writer<'a>,
 //     first: bool,
 //     use_ansi: bool,
 // }
-
+//
 // impl<'a> CustomVisitor<'a> {
 //     fn new(writer: Writer<'a>, use_ansi: bool) -> Self {
 //         CustomVisitor { writer, first: true, use_ansi }
 //     }
-
+//
 //     fn write_field(&mut self, field: &Field) {
 //         if field.name() == "message" {
 //             if self.use_ansi {
@@ -476,7 +474,7 @@ impl<'a> Iterator for SkipAnsiColorIter<'a> {
 //             }
 //             return;
 //         }
-
+//
 //         if !self.first {
 //             let _ = self.writer.write_str(", ");
 //         } else {
@@ -487,7 +485,7 @@ impl<'a> Iterator for SkipAnsiColorIter<'a> {
 //             }
 //             self.first = false;
 //         }
-
+//
 //         if self.use_ansi {
 //             let _ = self.writer.write_str("\x1b[33m");
 //             let _ = self.writer.write_str(field.name());
@@ -499,13 +497,13 @@ impl<'a> Iterator for SkipAnsiColorIter<'a> {
 //         }
 //     }
 // }
-
+//
 // impl<'a> Visit for CustomVisitor<'a> {
 //     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
 //         self.write_field(field);
 //         let _ = write!(self.writer, r#"{:?}"#, value);
 //     }
-
+//
 //     // 也可以实现其他 record_* 方法来优化显示
 //     fn record_str(&mut self, field: &Field, value: &str) {
 //         self.write_field(field);
@@ -513,34 +511,35 @@ impl<'a> Iterator for SkipAnsiColorIter<'a> {
 //         let _ = write_json_str(&mut self.writer, value);
 //         let _ = self.writer.write_char('"');
 //     }
-
+//
 //     fn record_i64(&mut self, field: &Field, value: i64) {
 //         self.write_field(field);
 //         let mut buf = itoa::Buffer::new();
 //         let _ = self.writer.write_str(buf.format(value));
 //     }
-
+//
 //     fn record_u64(&mut self, field: &Field, value: u64) {
 //         self.write_field(field);
 //         let mut buf = itoa::Buffer::new();
 //         let _ = self.writer.write_str(buf.format(value));
 //     }
-
+//
 //     fn record_bool(&mut self, field: &Field, value: bool) {
 //         self.write_field(field);
 //         let v = if value { "true" } else { "false" };
 //         let _ = self.writer.write_str(v);
 //     }
-
+//
 //     fn record_f64(&mut self, field: &Field, value: f64) {
 //         self.write_field(field);
 //         let _ = write!(self.writer, "{}", value);
 //     }
-
+//
 // }
 
 type ValueStr = SmallString<[u8; 128]>;
 
+/// 创建一个 Visitor 来收集字段
 struct CollectVisitor {
     message: ValueStr,
     fields: SmallVec<[(CompactString, ValueStr); 64]>,
@@ -578,21 +577,13 @@ impl CollectVisitor {
         }
 
         if !self.message.is_empty() {
-            if use_ansi {
-                wstr!("\x1b[31m");
-            }
+            if use_ansi { wstr!("\x1b[31m"); }
             wch!('【');
-            if use_ansi {
-                wstr!("\x1b[0m");
-            }
+            if use_ansi { wstr!("\x1b[0m"); }
             wstr!(&self.message);
-            if use_ansi {
-                wstr!("\x1b[31m");
-            }
+            if use_ansi { wstr!("\x1b[31m"); }
             wch!('】');
-            if use_ansi {
-                wstr!("\x1b[0m");
-            }
+            if use_ansi { wstr!("\x1b[0m"); }
             wch!(' ');
         }
 
@@ -601,7 +592,9 @@ impl CollectVisitor {
             if !first {
                 wstr!(", ");
             } else {
+                if use_ansi { wstr!("\x1b[31m"); }
                 wch!('{');
+                if use_ansi { wstr!("\x1b[0m"); }
                 first = false;
             }
 
@@ -622,7 +615,9 @@ impl CollectVisitor {
         }
 
         if !first {
+            if use_ansi { wstr!("\x1b[31m"); }
             wch!('}');
+            if use_ansi { wstr!("\x1b[0m"); }
         }
     }
 }

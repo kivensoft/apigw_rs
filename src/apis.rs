@@ -134,16 +134,18 @@ pub fn query(paths: &str) -> ApiResult<proxy::EndPointDisplayMap> {
 #[bean(deser)]
 pub struct RegReq {
     endpoint: CompactString,
-    ttl: u32,
+    ttl: Option<u32>,
     paths: String,
 }
 
 /// 注册服务(同时也作为心跳服务使用)
 pub fn reg(param: RegReq) -> ApiResult<()> {
+    let ttl = param.ttl.unwrap_or(0);
+    let endpoint = param.endpoint;
     // path参数为空时使用paths参数进行注册
     for path in param.paths.split(',') {
-        if proxy::register_service(path, &param.endpoint, param.ttl) {
-            tracing::debug!(endpoint = %param.endpoint, path = %path, "服务注册成功");
+        if proxy::register_service(path, &endpoint, ttl) {
+            tracing::debug!(%endpoint, %path, "服务注册成功");
         }
     }
 
@@ -190,15 +192,15 @@ pub async fn cfg(keys: &str) -> ApiResult<CfgRes> {
 
 /// 重新加载配置信息
 pub async fn recfg() -> ApiResult<()> {
-    let df = &AppConf::get().dict_file;
-    if !df.is_empty() {
-        match dict::load(df).await {
+    let dict_file = &AppConf::get().dict_file;
+    if !dict_file.is_empty() {
+        match dict::load(dict_file).await {
             Ok(_) => {
-                tracing::info!(dict_file = %df, "加载公共配置完成");
+                tracing::info!(%dict_file, "加载公共配置完成");
                 api_ok!()
             },
-            Err(e) => {
-                tracing::error!(dict_file = %df, err = %e, "重新加载公共配置失败");
+            Err(err) => {
+                tracing::error!(%dict_file, %err, "重新加载公共配置失败");
                 api_err!()
             },
         }

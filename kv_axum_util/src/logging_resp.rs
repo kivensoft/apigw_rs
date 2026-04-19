@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::{Bytes, BytesMut};
+use compact_str::CompactString;
 use futures_util::stream::Stream;
 use http_body::Body as HttpBody;
 use std::pin::Pin;
@@ -13,12 +14,17 @@ use std::task::{Context, Poll};
 
 use crate::ReqId;
 
+#[derive(Clone, Debug)]
+pub struct ReqPath(pub CompactString);
+
 /// 中间件, 捕获输出结果
 pub async fn capture_response_body(
     State(max_size): State<u32>, req: Request<Body>, next: Next,
 ) -> impl IntoResponse {
+    let req_path = ReqPath(req.uri().path().into());
     let rid = req.extensions().get::<ReqId>().map_or(0, |v| v.0);
-    let response = next.run(req).await;
+    let mut response = next.run(req).await;
+    response.extensions_mut().insert(req_path);
 
     let (parts, incoming) = response.into_parts();
     let use_log = tracing::enabled!(tracing::Level::DEBUG) && resp_is_text(&parts.headers);

@@ -17,6 +17,7 @@ use axum::{
 use compact_str::CompactString;
 use dashmap::DashMap;
 use fnv::FnvHashMap;
+use http_body_util::BodyExt;
 use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::{TokioExecutor, TokioTimer},
@@ -221,8 +222,8 @@ pub fn services_clean() {
     });
 
     if !del_keys.is_empty() {
-        for k in del_keys {
-            tracing::debug!(path = %k, "清理反向代理服务");
+        for path in del_keys {
+            tracing::debug!(%path, "清理反向代理服务");
         }
     }
 }
@@ -240,19 +241,19 @@ pub async fn proxy_handler(req: Request, rid: ReqId, uid: UserId) -> Response {
         Some(s) => s,
         None => {
             // 匹配失败, 直接返回 404
-            tracing::debug!(path = %path, "未配置反向代理服务");
+            tracing::debug!(%path, "未配置反向代理服务");
             return ApiError::not_found().into_response();
         },
     };
-    tracing::info!(path = %path, endpoint = %endpoint, "转发反向代理请求");
+    tracing::info!(%path, %endpoint, "⚡转发反向代理请求");
 
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
     // 构建目标 URI
     let target_uri = match build_target_uri(&endpoint, path_and_query) {
         Ok(uri) => uri,
-        Err(e) => {
-            tracing::warn!(err = %e, "构建代理请求URI失败");
+        Err(err) => {
+            tracing::warn!(%err, "构建代理请求URI失败");
             return ApiError::error("构建代理请求URI失败").into_response();
         },
     };
@@ -269,10 +270,14 @@ pub async fn proxy_handler(req: Request, rid: ReqId, uid: UserId) -> Response {
     // 发送请求到上游
     match get_client().request(new_req).await {
         Ok(res) => {
-            res.into_response()
+            // 不要通过 body.collect() 方法返回, 那样会占用大量内存
+            // 应使用 stream 流方式返回, 避免大量内存占用
+            let (parts, body) = res.into_parts();
+            let stream_body = Body::from_stream(body.into_data_stream());
+            Response::from_parts(parts, stream_body)
         },
-        Err(e) => {
-            tracing::warn!(err = %e, "上游请求失败");
+        Err(err) => {
+            tracing::warn!(%err, "上游请求失败");
             ApiError::error_with_status(StatusCode::BAD_GATEWAY, "上游服务不可用")
                 .into_response()
         },
@@ -322,9 +327,9 @@ fn poll_endpoint(path: &str) -> Option<CompactString> {
     }
 
     if !del_keys.is_empty() {
-        for key in del_keys {
-            SERVICE_MAP.remove(&key);
-            tracing::debug!(path = %key, "移除反向代理列表为空的项");
+        for path in del_keys {
+            SERVICE_MAP.remove(&path);
+            tracing::debug!(%path, "移除反向代理列表为空的项");
         }
     }
 
@@ -349,9 +354,13 @@ fn get_client() -> &'static ProxyClient {
         connector.set_connect_timeout(Some(Duration::from_secs(timeout)));
 
         Client::builder(TokioExecutor::new())
+            // 配置连接池：空闲连接存活时间
             .pool_idle_timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(32)
+            // 配置连接池：每个主机最大空闲连接数
+            .pool_max_idle_per_host(16)
+            // 配置 pool_timer：用于清理空闲连接（关键配置）
             .pool_timer(TokioTimer::new())
+            // 构建连接器
             .build(connector)
     })
 }

@@ -165,16 +165,16 @@ impl AuthState {
                 Some(s) => s,
                 None => return None,
             },
-            Err(e) => {
-                tracing::error!(err = %e, "访问 redis 出现错误");
+            Err(err) => {
+                tracing::error!(%err, "访问 redis 出现错误");
                 return None;
             },
         };
 
         let auth_info = match AuthInfo::decode(value.as_ref()) {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!(err = %e, "解码 AuthInfo 结构失败");
+            Err(err) => {
+                tracing::error!(%err, "解码 AuthInfo 结构失败");
                 return None;
             },
         };
@@ -190,14 +190,14 @@ impl AuthState {
 
         let key = self.gen_redis_key(sign);
         let mut value = Vec::with_capacity(AUTH_INFO_ENCODE_SIZE);
-        if let Err(e) = auth_info.encode(&mut value) {
-            tracing::error!(err = %e, "AuthInfo 序列化成 protobuf 失败");
+        if let Err(err) = auth_info.encode(&mut value) {
+            tracing::error!(%err, "AuthInfo 序列化成 protobuf 失败");
             return;
         }
 
         task::spawn(async move {
-            if let Err(e) = REDIS_CLIENT.get().set(key, value).await {
-                tracing::error!(err = %e, "保存 AuthInfo 到 redis 失败");
+            if let Err(err) = REDIS_CLIENT.get().set(key, value).await {
+                tracing::error!(%err, "保存 AuthInfo 到 redis 失败");
             }
         });
     }
@@ -271,8 +271,8 @@ async fn parse_uid(jwt_token: String, state: &AuthState) -> Option<u32> {
             state.save_to_multi_cache(sign, auth_info);
             Some(uid)
         },
-        Err(e) => {
-            tracing::error!(err = %e, "解码 jwt 失败");
+        Err(err) => {
+            tracing::error!(%err, "解码 jwt 失败");
             None
         },
     }
@@ -309,8 +309,8 @@ fn decode_sign(out: &mut CacheKey, sign: &str) -> bool {
 
     match URL_SAFE_NO_PAD.decode_slice(sign.as_bytes(), out) {
         Ok(count) => count == out.len(),
-        Err(e) => {
-            tracing::error!(err = %e, "解码 jwt 签名(base64)失败");
+        Err(err) => {
+            tracing::error!(%err, "解码 jwt 签名(base64)失败");
             false
         },
     }

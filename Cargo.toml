@@ -46,7 +46,7 @@ tokio-utils = "0.1" # tokio扩展工具类
 hyper = { version = "1", features = ["http1", "client"] } # 最流行的底层http协议库
 hyper-util = { version = "0.1", features = [ "client", "client-legacy", "http1", "tokio" ] } #hyper 扩展库
 http-body = "1" # http body 扩展库
-# http-body-util = "0.1" # http body 扩展库
+http-body-util = "0.1" # http body 扩展库
 
 axum = "0.8" # tokio 官方出品的web框架
 tower = "0.5" # 配合 axum 使用的中间件库

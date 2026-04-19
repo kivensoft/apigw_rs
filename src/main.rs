@@ -18,20 +18,14 @@ use std::{env, fmt::Write, net::SocketAddr, time::Duration};
 
 use anyhow::Result;
 use appvars::AppVar;
-use axum::middleware::from_fn_with_state;
 use compact_str::CompactString;
-use kv_axum_util::{ReqIdGenerator, capture_response_body, custom_trace_layer, req_id_middleware};
 use kv_redis::RedisClient;
-use rclite::Arc;
 use smallstr::SmallString;
 use tokio::task;
-use tower_http::cors::CorsLayer;
 
 use crate::{
     appconf::AppConf,
     appvars::{APP_NAME, APP_VAR, APP_VER, BANNER, RATE_LIMITER_STATE, REDIS_CLIENT, SCHEDULER},
-    auth::{AuthState, auth_middleware},
-    rate_limit::rate_limit_middleware,
     routes::build_router,
 };
 
@@ -168,30 +162,16 @@ async fn async_main(ac: AppConf, av: AppVar) -> Result<()> {
     // 创建定时任务
     run_scheduler().await;
 
-    let mtcs = ac.mtcs.parse().expect(arg_err!("mtcs"));
-    let auth_state = AuthState::new(&ac.jwt_key, &ac.jwt_iss, &ac.redis_prefix, mtcs, av.redis_ttl);
-    let rate_limiter_state = RATE_LIMITER_STATE.clone();
-
-    let router = build_router(&ac.gw_prefix)
-        // 定制化日志输出格式
-        .layer(custom_trace_layer())
-        // 限速中间件
-        .layer(from_fn_with_state(rate_limiter_state, rate_limit_middleware))
-        // 解析 jwt 并在 request extensions 中存放解析结果, 非0 是已登录用户id, 0 表示用户尚未登录
-        .layer(from_fn_with_state(Arc::new(auth_state), auth_middleware))
-        // 允许跨域访问请求
-        .layer(CorsLayer::permissive())
-        // 捕获输出结果
-        .layer(from_fn_with_state(256, capture_response_body))
-        // 为每个请求生成自增的请求id
-        .layer(from_fn_with_state(ReqIdGenerator::new(), req_id_middleware));
-
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // 创建路由器
+    let router = build_router();
 
     // 运行http server主服务
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
+    tracing::debug!(%addr,"网关监听地址");
     tracing::info!("🚀 {} {} running on http://{}", APP_NAME, APP_VER, addr);
 
+    // 启动新的任务来运行服务, 主线任务留给 Ctrl + C 监听器
     let http_task = tokio::spawn(async move {
         // 启动服务器
         let mut shutdown_rx_clone = shutdown_rx.clone();
