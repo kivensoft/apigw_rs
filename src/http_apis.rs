@@ -6,6 +6,7 @@ use axum::{
     extract::{Path, Query, Request}, response::IntoResponse,
 };
 use kv_axum_util::{ApiError, ApiResult, ClientIp, JsonString, ReqId, api_err, param_from_multi};
+use tracing::debug;
 
 // pub static RATE_LIMITER: StaticVal<Arc<RateLimiter>> = StaticVal::new();
 
@@ -71,8 +72,8 @@ pub async fn rate(Json(body): Json<apis::RateReq>) -> ApiResult<()> {
 }
 
 /// 查询所有限流器
-pub async fn rates(Json(body): Json<apis::SimpleQueryReq>) -> ApiResult<apis::RatesRes> {
-    let q = body.q.as_ref().map_or("", |s| s);
+pub async fn rates(body: Option<Json<apis::SimpleQueryReq>>) -> ApiResult<apis::RatesRes> {
+    let q = body.as_ref().and_then(|v| v.0.q.as_ref()).map_or("", |s| s);
     apis::rates(q)
 }
 
@@ -88,7 +89,7 @@ pub async fn proxy(rid: ReqId, uid: UserId, req: Request) -> impl IntoResponse {
     let path = req.uri().path();
 
     if path.starts_with(&ac.gw_prefix) {
-        tracing::debug!(path = %path, "网关未提供该接口");
+        debug!(%path, "网关未提供该接口");
         ApiError::not_found().into_response()
     } else {
         proxy::proxy_handler(req, rid, uid).await

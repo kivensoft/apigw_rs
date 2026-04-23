@@ -31,6 +31,7 @@ overflow-checks = false
 
 [features]
 default = []
+hot-restart = ["shellflip", "tokio-util"]
 
 [dependencies]
 mimalloc = { version = "0.1", optional = true } # 替代系统内存分配器
@@ -42,10 +43,10 @@ tokio = { version = "1", features = [
 tokio-utils = "0.1" # tokio扩展工具类
 # futures = "0.3" # 异步编程的官方库
 # futures-util = "0.3" # 异步扩展库
-# async-trait = "0.1" # trait的异步函数声明库
+async-trait = "0.1" # trait的异步函数声明库
 hyper = { version = "1", features = ["http1", "client"] } # 最流行的底层http协议库
 hyper-util = { version = "0.1", features = [ "client", "client-legacy", "http1", "tokio" ] } #hyper 扩展库
-http-body = "1" # http body 扩展库
+# http-body = "1" # http body 库
 http-body-util = "0.1" # http body 扩展库
 
 axum = "0.8" # tokio 官方出品的web框架
@@ -69,6 +70,7 @@ serde_repr = "0.1" # 将 enum 进行数值化的序列化和反序列化
 # urlencoding = "2" # url编解码库
 # cookie = { version = "0.18", features = ["percent-encode"] } # http cookie库
 anyhow = "1" # 最流行的错误处理库
+arc-swap = "1" # 读多写少的的并发数据共享库
 base64 = "0.22" # base64 编解码库
 bytes = "1" # 高效字节处理库
 # bumpalo = {version = "3", features = ["collections", "serde", "boxed"]} # 快速 arena 内存分配库
@@ -80,7 +82,8 @@ dashmap = "6" # 高性能线程安全map
 fast_radix_trie = "1" # 一个快速字典树
 fnv = "1" # 速度更快的HashMap, 适用于小数据量
 governor = "0.10" # 经典令牌桶算法库
-indexmap = {version = "2", features = ["serde"]} # 类似java的LinkedHashMap
+# indexmap = {version = "2", features = ["serde"]} # 类似java的LinkedHashMap
+cfg-if = "1" # 条件编译宏
 itoa = "1" # 快速整数转字符串库
 memchr = "2" # 快速查找字符串中某个字符的索引
 mini-moka = "0.10" # 轻量级缓存库，rust版本的Caffeine实现
@@ -88,11 +91,12 @@ parking_lot = "0.12" # 性能更好的替代标准库Mutex/RwLock的三方库
 prost = "0.14" # protobuf 序列化反序列化库
 rand = "0.10" # 最广泛使用的随机数生成库
 redb = "4" # 嵌入式kv数据库
-rclite = "0.3" # 比Arc更轻量的替代库
+rclite = "0.4" # 比Arc更轻量的替代库
 # slab = "0.4" # arena 内存分配器
+# sharded-slab = "0.1" # 线程安全的slab
 smallstr = { version = "0.3", features = ["serde"] } # 基于栈的字符串
 smallvec = { version = "1", features = ["write"] } # 基于栈的动态数组
-strum = { version = "0.28", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] } # 枚举与数字互转的库
 # unicode-segmentation = "1" # unicode 字符库, 包含对 emoji 字符的支持
 # zerompk = "0.4" # 极致速度的序列化库
 
@@ -106,4 +110,8 @@ kv_redis = { path = "kv_redis" } # redis 扩展库
 
 # 只在 musl 目标下启用 mimalloc
 [target.'cfg(all(target_os="linux", target_env="musl"))'.dependencies]
-mimalloc = "0.1"
+mimalloc = "0.1" # 内存分配库
+
+[target.'cfg(unix)'.dependencies]
+shellflip = { version = "2", optional = true }
+tokio-util = { version = "0.7", optional = true, features = ["rt"] }

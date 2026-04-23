@@ -7,6 +7,8 @@ use tokio::sync::Mutex;
 
 use crate::{remove_from_vec, unix_timestamp};
 
+const TASKS_IDLE_SIZE: usize = 1024;
+
 type TaskAction = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 
@@ -99,6 +101,13 @@ impl SimpleScheduler {
             }
 
             remove_from_vec(&mut tasks, &wait_del_indices);
+
+            // 当任务数组的空闲空间过大时回收空间
+            let cap = tasks.capacity();
+            if cap > TASKS_IDLE_SIZE && cap / 2 > tasks.len() {
+                let len = tasks.len();
+                tasks.shrink_to(len);
+            }
         }
     }
 }

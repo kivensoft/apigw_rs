@@ -1,12 +1,13 @@
 use std::num::NonZeroU32;
 
 use anyhow::Context;
-use compact_str::{CompactString, ToCompactString};
-use fnv::{FnvBuildHasher, FnvHashMap};
-use indexmap::IndexMap;
+use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
+use compact_str::CompactString;
+use fnv::FnvHashMap;
 use kv_axum_util::{ApiResult, JsonString, api_err, api_json, api_ok, bean, if_else, now_str_into};
 use localtime::LocalDateTime;
 use smallvec::SmallVec;
+use tracing::{debug, error, info};
 
 use crate::{
     APP_NAME, APP_VER,
@@ -84,11 +85,19 @@ pub fn token(uid: u32) -> ApiResult<TokenRes> {
         .map_err(|e| err!("无法生成unix timestamp: {:?}", e))?;
     let claims = JwtClaims { iss, exp, uid };
 
-    let mut buf = SmallVec::<[u8; 256]>::new();
-    serde_json::to_writer(&mut buf, &claims).with_context(|| efmt!("json序列化失败"))?;
-    let claims_json = unsafe { std::str::from_utf8_unchecked(&buf) };
+    // 将 claims 序列化成 json
+    let mut claims_json = SmallVec::<[u8; 256]>::new();
+    serde_json::to_writer(&mut claims_json, &claims).with_context(|| efmt!("json序列化失败"))?;
+
+    // 把 claims_json 转成 base64
+    let mut b64_buf = [0u8; 256];
+    let b64_size = BASE64_URL_SAFE_NO_PAD
+        .encode_slice(&claims_json, &mut b64_buf)
+        .with_context(|| efmt!("base64编码失败"))?;
+    let claims_b64 = unsafe { std::str::from_utf8_unchecked(&b64_buf[..b64_size]) };
+
     let token =
-        kjwt::encode_raw(claims_json, &ac.jwt_key).map_err(|e| err!("编码jwt失败: {:?}", e))?;
+        kjwt::encode_raw(claims_b64, &ac.jwt_key).map_err(|e| err!("编码jwt失败: {:?}", e))?;
 
     api_ok!(TokenRes { token })
 }
@@ -106,7 +115,7 @@ pub fn blacklist(token: &str) -> ApiResult<()> {
     }
 
     if let Some((sign, exp)) = utils::parse_token_sign_exp(token) {
-        db::put(sign, exp)?;
+        db::InvalidToken::put(sign, exp)?;
     }
 
     api_ok!()
@@ -121,10 +130,10 @@ pub struct QueryReq {
 /// 注册服务查询
 pub fn query(paths: &str) -> ApiResult<proxy::EndPointDisplayMap> {
     // 没有path参数，则使用paths参数
-    let mut map = FnvHashMap::with_capacity_and_hasher(0, Default::default());
+    let mut map = FnvHashMap::with_capacity_and_hasher(32, Default::default());
     for path in paths.split(',') {
         if let Some(services) = proxy::service_query(path) {
-            map.insert(path.to_compact_string(), services);
+            map.insert(path.to_string(), services);
         }
     }
 
@@ -145,7 +154,7 @@ pub fn reg(param: RegReq) -> ApiResult<()> {
     // path参数为空时使用paths参数进行注册
     for path in param.paths.split(',') {
         if proxy::register_service(path, &endpoint, ttl) {
-            tracing::debug!(%endpoint, %path, "服务注册成功");
+            debug!(%endpoint, %path, "服务注册成功");
         }
     }
 
@@ -179,7 +188,7 @@ pub async fn cfg(keys: &str) -> ApiResult<CfgRes> {
     let mut map = FnvHashMap::with_capacity_and_hasher(64, Default::default());
 
     for key in keys.split(',') {
-        let list = dict::query(key).await;
+        let list = dict::query(key);
         if !list.is_empty() {
             for (k, v) in list {
                 map.insert(k, v);
@@ -194,18 +203,18 @@ pub async fn cfg(keys: &str) -> ApiResult<CfgRes> {
 pub async fn recfg() -> ApiResult<()> {
     let dict_file = &AppConf::get().dict_file;
     if !dict_file.is_empty() {
-        match dict::load(dict_file).await {
+        match dict::load(dict_file) {
             Ok(_) => {
-                tracing::info!(%dict_file, "加载公共配置完成");
+                info!(%dict_file, "加载公共配置完成");
                 api_ok!()
             },
             Err(err) => {
-                tracing::error!(%dict_file, %err, "重新加载公共配置失败");
+                error!(%dict_file, %err, "重新加载公共配置失败");
                 api_err!()
             },
         }
     } else {
-        tracing::error!("重新加载公共配置失败, 未配置公共配置的文件名");
+        error!("重新加载公共配置失败, 未指定 dict_file");
         api_err!("api被禁用")
     }
 }
@@ -251,7 +260,7 @@ pub fn rate(rate_req: RateReq) -> ApiResult<()> {
 
 #[bean(ser)]
 pub struct RatesRes {
-    pub rates: IndexMap<CompactString, RateLimitCfg, FnvBuildHasher>,
+    pub rates: FnvHashMap<CompactString, RateLimitCfg>,
 }
 
 /// 查询所有限流器

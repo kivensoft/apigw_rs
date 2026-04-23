@@ -15,7 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use compact_str::CompactString;
-use dashmap::DashMap;
+use fast_radix_trie::RadixMap;
 use fnv::FnvHashMap;
 use http_body_util::BodyExt;
 use hyper_util::{
@@ -24,21 +24,30 @@ use hyper_util::{
 };
 use kv_axum_util::{ApiError, ReqId, bean, if_else, unix_timestamp};
 use localtime::LocalDateTime;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
+use rclite::Arc;
 use smallstr::SmallString;
 use smallvec::SmallVec;
+use tracing::{debug, info, warn};
 
-use crate::{appvars::APP_VAR, auth::UserId, efmt, path_iter::PathIter};
+use crate::{appvars::APP_VAR, auth::UserId, efmt};
 
+/// 用于对外显示的代理配置信息
+pub type EndPointDisplayVec = Vec<EndpointDisplay>;
+pub type EndPointDisplayMap = FnvHashMap<String, Vec<EndpointDisplay>>;
+/// 端点列表类型, 使用双端队列是因为每次做反向代理操作时需要把第一项移动到末尾, 实现轮询机制
+type EndpointConfigVec = Arc<Mutex<VecDeque<EndpointConfig>>>;
+/// 服务字典类型, 端点列表使用 Mutex 而不是 RwLock 是因为大部分访问都需要修改端点列表
+type ServiceMap = RwLock<RadixMap<EndpointConfigVec>>;
+/// 代理客户端类型
 type ProxyClient = Client<HttpConnector, Body>;
 
+/// 代理配置信息项
 #[bean(ser)]
 pub struct EndpointDisplay {
     pub endpoint: CompactString,
     pub expire_at: Option<LocalDateTime>,
 }
-
-pub type EndPointDisplayMap = FnvHashMap<CompactString, Vec<EndpointDisplay>>;
 
 #[derive(Clone)]
 struct EndpointConfig {
@@ -48,13 +57,8 @@ struct EndpointConfig {
     expire_at: u64,
 }
 
-/// 端点列表类型, 使用双端队列是因为每次做反向代理操作时需要把第一项移动到末尾, 实现轮询机制
-type EndpointConfigVec = VecDeque<EndpointConfig>;
-/// 服务字典类型, 端点列表使用 Mutex 而不是 RwLock 是因为大部分访问都需要修改端点列表
-type ServiceMap = DashMap<CompactString, Mutex<EndpointConfigVec>>;
-
 /// 已注册的服务列表
-static SERVICE_MAP: LazyLock<ServiceMap> = LazyLock::new(DashMap::new);
+static SERVICES: LazyLock<ServiceMap> = LazyLock::new(|| RwLock::new(RadixMap::new()));
 /// http request 请求的客户端，内部使用缓存池
 static CLIENT: OnceLock<ProxyClient> = OnceLock::new();
 
@@ -66,28 +70,28 @@ static CLIENT: OnceLock<ProxyClient> = OnceLock::new();
 /// * `ttl` - 服务有效期(单位: 秒)
 pub fn register_service(path: &str, endpoint: &str, ttl: u32) -> bool {
     // 注册服务的过期时间
-    let expire_at = if_else!(ttl == 0, 0, unix_timestamp() + (ttl as u64));
+    let expire_at = Now::new().expire_at(ttl as u64);
 
-    // 路径有注册的服务
-    if let Some(mutex_val) = SERVICE_MAP.get(path) {
-        let mut endpoints = mutex_val.lock();
-        // 对应端点的服务找到，更新过期时间, 返回false，表示续租
-        if let Some(srv) = endpoints.iter_mut().find(|v| v.endpoint.as_str() == endpoint) {
-            srv.expire_at = expire_at;
-            tracing::debug!(path = %path, endpoint = %endpoint, ttl = %ttl, "代理服务心跳更新成功");
+    // 获取路径对应的key, 不存在则新建
+    let vec = SERVICES
+        .write()
+        .entry(path)
+        .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())))
+        .clone();
+
+    let mut vec_guard = vec.lock();
+
+    for entry in vec_guard.iter_mut() {
+        if endpoint == entry.endpoint {
+            entry.expire_at = expire_at;
+            debug!(%path, %endpoint, %ttl, "代理服务心跳更新成功");
+            // 返回 false, 表示是更新反向代理服务信息而不是新建
             return false;
         }
-
-        // 找不到，创建服务并添加到链表末尾
-        endpoints.push_back(EndpointConfig { endpoint: endpoint.into(), expire_at });
-    } else {
-        // 路径对应没有服务，创建服务及链表
-        let mut endpoints = EndpointConfigVec::new();
-        endpoints.push_back(EndpointConfig { endpoint: endpoint.into(), expire_at });
-        SERVICE_MAP.insert(path.into(), Mutex::new(endpoints));
     }
 
-    tracing::debug!(path = %path, endpoint = %endpoint, ttl = %ttl, "代理服务新注册成功");
+    vec_guard.push_back(EndpointConfig { endpoint: endpoint.into(), expire_at });
+    debug!(%path, %endpoint, %ttl, "代理服务新注册成功");
     true
 }
 
@@ -96,109 +100,86 @@ pub fn register_service(path: &str, endpoint: &str, ttl: u32) -> bool {
 /// ### 参数
 /// * `endpoint` - 服务端点, 例如: "127.0.0.1:8080"
 pub fn unregister_service(endpoint: &str) {
-    let mut wait_del_keys = SmallVec::<[CompactString; 32]>::new();
-    let mut remove_from_keys = SmallVec::<[CompactString; 32]>::new();
+    let mut wait_del_paths = SmallVec::<[String; 32]>::new();
 
-    for entry in SERVICE_MAP.iter() {
-        let mut endpoints = entry.value().lock();
-        let old_len = endpoints.len();
-
-        endpoints.retain(|v| v.endpoint.as_str() != endpoint);
-
-        if old_len > endpoints.len() {
-            remove_from_keys.push(entry.key().clone());
-        }
-
-        // 如果服务列表为空, 记录需要删除的键, 后续进行删除
-        if endpoints.is_empty() {
-            wait_del_keys.push(entry.key().clone());
+    // 遍历所有代理, 找到匹配的 endpoint, 将对应的路径加入待删除路径列表
+    for (path, cfg_vec) in SERVICES.read().iter() {
+        let mut guard = cfg_vec.lock();
+        let old_len = guard.len();
+        guard.retain(|cfg| cfg.endpoint != endpoint);
+        if old_len != guard.len() {
+            wait_del_paths.push(unsafe { String::from_utf8_unchecked(path) });
         }
     }
 
-    // 删除 endpoints 为空的项
-    for key in &wait_del_keys {
-        SERVICE_MAP.remove_if(key, |_, v| v.lock().is_empty());
+    // 输出被移除的代理服务信息到日志中
+    let mut paths = SmallString::<[u8; 512]>::new();
+    for path in &wait_del_paths {
+        paths.push_str(path);
     }
+    debug!(%paths, %endpoint, "移除代理服务信息");
+    paths.clear();
 
-    // 记录日志
-    for path in remove_from_keys {
-        tracing::debug!(%path, %endpoint, "删除被代理服务成功");
+    // 删除所有匹配的 endpoint 对应的 path (当代理列表为空时)
+    let mut srv_guard = SERVICES.write();
+    for path in wait_del_paths {
+        if let Some(cfg_vec) = srv_guard.get(&path)
+            && cfg_vec.lock().is_empty()
+        {
+            paths.push_str(&path);
+            srv_guard.remove(&path);
+        }
     }
-    for path in wait_del_keys {
-        tracing::debug!(%path, %endpoint, "删除被代理服务列表为空的项成功")
-    }
+    drop(srv_guard);
+    // 输出已删除的路径列表
+    debug!(%paths, "删除代理列表为空的路径");
 }
 
 /// 列出当前注册的所有服务信息
 pub fn service_list() -> EndPointDisplayMap {
     let now = Now::new();
-    let mut result = {
-        let cap = (SERVICE_MAP.len() as f64 / 0.75).ceil() as usize;
+    let srv_guard = SERVICES.read();
+
+    let mut valid_endpoint_map = {
+        let cap = (srv_guard.len() as f64 / 0.75).ceil() as usize;
         EndPointDisplayMap::with_capacity_and_hasher(cap, Default::default())
     };
 
-    for entry in SERVICE_MAP.iter() {
-        let endpoints = entry.lock();
-
-        // 如果端点列表为空, 则直接进行下一次循环
-        let len = endpoints.len();
-        if len == 0 {
-            continue;
-        }
-
-        let mut new_endpoints = Vec::with_capacity(len);
-
-        // 复制尚未过期的所有端点到新的端点列表
-        for endpoint in endpoints.iter() {
-            // 只复制尚未过期的服务
-            if now.before(endpoint.expire_at) {
-                new_endpoints.push(EndpointDisplay {
-                    endpoint: endpoint.endpoint.clone(),
-                    expire_at: make_expire_at(endpoint.expire_at),
-                });
-            }
-        }
-
-        // 释放锁
-        drop(endpoints);
-
-        if !new_endpoints.is_empty() {
-            result.insert(entry.key().clone(), new_endpoints);
+    for (key, value) in srv_guard.iter() {
+        if let Some(valid_endpoints) = copy_valid_endpionts(value, &now) {
+            let path = unsafe { String::from_utf8_unchecked(key) };
+            valid_endpoint_map.insert(path, valid_endpoints);
         }
     }
 
-    result
+    valid_endpoint_map
 }
 
 // 查询指定路径的可用服务信息，路径可以是子路径，系统会自动进行递归查找，直到找到最匹配的服务
 pub fn service_query(path: &str) -> Option<Vec<EndpointDisplay>> {
+    let endpoints = match SERVICES.read().get_longest_common_prefix(path) {
+        Some((_, value)) => value.clone(),
+        None => return None,
+    };
+
     let now = Now::new();
+    let mut valid_endpoints = Vec::with_capacity(32);
 
-    for p in PathIter::new(path) {
-        if let Some(mutex_val) = SERVICE_MAP.get(p) {
-            let endpoints = mutex_val.lock();
-            let mut new_endpoints = Vec::with_capacity(endpoints.len());
-
-            for endpoint in endpoints.iter() {
-                if now.before(endpoint.expire_at) {
-                    new_endpoints.push(EndpointDisplay {
-                        endpoint: endpoint.endpoint.clone(),
-                        expire_at: make_expire_at(endpoint.expire_at),
-                    });
-                }
-            }
-
-            if !new_endpoints.is_empty() {
-                return Some(new_endpoints);
-            }
+    for endpoint in endpoints.lock().iter() {
+        if now.before(endpoint.expire_at) {
+            valid_endpoints.push(EndpointDisplay {
+                endpoint: endpoint.endpoint.clone(),
+                expire_at: expire_at_to_datetime(endpoint.expire_at),
+            });
         }
     }
 
-    None
+    Some(valid_endpoints)
 }
 
 /// 清理反向代理列表中的过期项
 pub fn services_clean() {
+    // 函数运行标志, 为 true 时, 表示程序正在运行
     static RUNNING: AtomicBool = AtomicBool::new(false);
 
     let result = RUNNING.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed);
@@ -206,26 +187,37 @@ pub fn services_clean() {
         return;
     }
 
-    let mut del_keys = SmallVec::<[CompactString; 32]>::new();
+    let mut del_keys = SmallVec::<[String; 32]>::new();
+    let mut del_endpoints = SmallVec::<[CompactString; 32]>::new();
     let now = Now::new();
 
-    SERVICE_MAP.retain(|k, v| {
-        let mut endpoints = v.lock();
+    for (key, value) in SERVICES.read().iter() {
+        let mut endpoints = value.lock();
+
         // 清理过期服务
-        endpoints.retain(|v| now.before(v.expire_at));
+        endpoints.retain(|cfg| {
+            if now.before(cfg.expire_at) {
+                true
+            } else {
+                del_endpoints.push(cfg.endpoint.clone());
+                false
+            }
+        });
+
         // 如果清理后服务列表为空, 则记录将被删除的路径, 后续日志输出需要
-        let ret = !endpoints.is_empty();
-        if !ret {
-            del_keys.push(k.clone());
+        if endpoints.is_empty() {
+            del_keys.push(unsafe { String::from_utf8_unchecked(key) });
         }
-        ret
-    });
+    }
 
     if !del_keys.is_empty() {
         for path in del_keys {
-            tracing::debug!(%path, "清理反向代理服务");
+            debug!(%path, "清理反向代理服务");
         }
     }
+
+    // 恢复运行标志为 false
+    RUNNING.store(false, Ordering::Release);
 }
 
 /// 反向代理函数
@@ -237,15 +229,15 @@ pub async fn proxy_handler(req: Request, rid: ReqId, uid: UserId) -> Response {
     let path = uri.path();
 
     // 查询已注册的反向代理服务, 按最长路径匹配优先, 得到本次反向代理的服务器信息
-    let endpoint = match poll_endpoint(path) {
+    let endpoint = match find_endpoint(path) {
         Some(s) => s,
         None => {
             // 匹配失败, 直接返回 404
-            tracing::debug!(%path, "未配置反向代理服务");
+            debug!(%path, "未配置反向代理服务");
             return ApiError::not_found().into_response();
         },
     };
-    tracing::info!(%path, %endpoint, "⚡转发反向代理请求");
+    info!(%path, %endpoint, "⚡转发反向代理请求");
 
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
@@ -253,7 +245,7 @@ pub async fn proxy_handler(req: Request, rid: ReqId, uid: UserId) -> Response {
     let target_uri = match build_target_uri(&endpoint, path_and_query) {
         Ok(uri) => uri,
         Err(err) => {
-            tracing::warn!(%err, "构建代理请求URI失败");
+            warn!(%err, "构建代理请求URI失败");
             return ApiError::error("构建代理请求URI失败").into_response();
         },
     };
@@ -267,7 +259,8 @@ pub async fn proxy_handler(req: Request, rid: ReqId, uid: UserId) -> Response {
     parts.headers.append("x-uid", uid.0.into());
     let new_req = Request::from_parts(parts, body);
 
-    // 发送请求到上游
+    // 发送请求到上游, 发送出现错误则说明服务失效, 删除该服务
+    // 之所以不重试, 是考虑到 clone request 需要时间与内存, 简单处理了事
     match get_client().request(new_req).await {
         Ok(res) => {
             // 不要通过 body.collect() 方法返回, 那样会占用大量内存
@@ -277,9 +270,11 @@ pub async fn proxy_handler(req: Request, rid: ReqId, uid: UserId) -> Response {
             Response::from_parts(parts, stream_body)
         },
         Err(err) => {
-            tracing::warn!(%err, "上游请求失败");
-            ApiError::error_with_status(StatusCode::BAD_GATEWAY, "上游服务不可用")
-                .into_response()
+            // 删除端点的注册信息: 当服务不存在(未启动)或者连接超时或者其它网络错误
+            unregister_service(&endpoint);
+
+            warn!(%err, "反向代理请求失败");
+            ApiError::error_with_status(StatusCode::BAD_GATEWAY, "上游服务不可用").into_response()
         },
     }
 }
@@ -291,45 +286,46 @@ impl Now {
         Self(unix_timestamp())
     }
 
-    fn before(&self, expire: u64) -> bool {
-        expire == 0 || self.0 <= expire
+    // 判断给定的过期时间戳是否依旧有效(尚未过期)
+    fn before(&self, expire_at: u64) -> bool {
+        expire_at == 0 || self.0 <= expire_at
+    }
+
+    fn expire_at(&self, expire_secs: u64) -> u64 {
+        if expire_secs > 0 {
+            self.0 + expire_secs
+        } else {
+            0
+        }
     }
 }
 
 /// 生成unix timestamp过期时间的本地时间格式
-fn make_expire_at(expire: u64) -> Option<LocalDateTime> {
+fn expire_at_to_datetime(expire: u64) -> Option<LocalDateTime> {
     if expire == 0 {
-        return None;
+        None
+    } else {
+        Some(LocalDateTime::from_unix_timestamp(expire as i64))
     }
-    Some(LocalDateTime::from_unix_timestamp(expire as i64))
 }
 
-/// 轮询指定服务的端点
-fn poll_endpoint(path: &str) -> Option<CompactString> {
-    let mut del_keys = SmallVec::<[CompactString; 32]>::new();
+/// 根据api路径查找对应的服务端点, 如果同一个路径有多个服务端点, 则采用轮询方式
+fn find_endpoint(path: &str) -> Option<CompactString> {
+    let now = Now::new();
 
-    for p in PathIter::new(path) {
-        if let Some(mutex_val) = SERVICE_MAP.get(p) {
-            let mut endpoints = mutex_val.lock();
-            let now = unix_timestamp();
-            while let Some(endpoint) = endpoints.pop_front() {
-                if endpoint.expire_at == 0 || endpoint.expire_at >= now {
-                    let res = endpoint.endpoint.clone();
-                    endpoints.push_back(endpoint);
-                    return Some(res);
-                }
-            }
+    let endpoints = match SERVICES.read().get_longest_common_prefix(path) {
+        Some((_, value)) => value.clone(),
+        None => return None,
+    };
 
-            if endpoints.is_empty() {
-                del_keys.push(p.into());
-            }
-        }
-    }
+    let mut endpoints_guard = endpoints.lock();
 
-    if !del_keys.is_empty() {
-        for path in del_keys {
-            SERVICE_MAP.remove(&path);
-            tracing::debug!(%path, "移除反向代理列表为空的项");
+    while let Some(endpoint) = endpoints_guard.pop_front() {
+        // 检查服务是否过期, 只返回尚未过期的反向代理服务端点
+        if now.before(endpoint.expire_at) {
+            let endpoint_clone = endpoint.endpoint.clone();
+            endpoints_guard.push_back(endpoint);
+            return Some(endpoint_clone);
         }
     }
 
@@ -343,6 +339,28 @@ fn build_target_uri(endpoint: &str, path_and_query: &str) -> Result<Uri> {
     buf.push_str(endpoint);
     buf.push_str(path_and_query);
     buf.parse().with_context(|| efmt!("构建 URI 失败"))
+}
+
+fn copy_valid_endpionts(endpoints: &EndpointConfigVec, now: &Now) -> Option<EndPointDisplayVec> {
+    let guard = endpoints.lock();
+
+    if guard.is_empty() {
+        return None;
+    }
+
+    let mut result = Vec::with_capacity(guard.len());
+
+    for endpoint in guard.iter() {
+        // 只复制尚未过期的服务
+        if now.before(endpoint.expire_at) {
+            result.push(EndpointDisplay {
+                endpoint: endpoint.endpoint.clone(),
+                expire_at: expire_at_to_datetime(endpoint.expire_at),
+            });
+        }
+    }
+
+    if_else!(!result.is_empty(), Some(result), None)
 }
 
 fn get_client() -> &'static ProxyClient {

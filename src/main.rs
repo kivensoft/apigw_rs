@@ -9,6 +9,8 @@ mod macros;
 mod path_iter;
 mod proxy;
 mod rate_limit;
+#[cfg(all(unix, feature = "hot-restart"))]
+mod reboot;
 mod routes;
 mod static_val;
 mod syssrv;
@@ -22,6 +24,7 @@ use compact_str::CompactString;
 use kv_redis::RedisClient;
 use smallstr::SmallString;
 use tokio::task;
+use tracing::{debug, error, info};
 
 use crate::{
     appconf::AppConf,
@@ -50,7 +53,7 @@ fn get_app_path() -> CompactString {
         }
     }
 
-    tracing::error!("获取程序的当前路径失败");
+    error!("获取程序的当前路径失败");
     "".into()
 }
 
@@ -73,7 +76,7 @@ fn make_abs_path(db_path: &str) -> String {
     }
 }
 
-fn parse_cfg() -> Option<(AppConf, AppVar)> {
+fn parse_cfg() -> bool {
     let mut buf = SmallString::<[u8; 512]>::new();
 
     let _ = write!(buf, "{APP_NAME} 版本 {APP_VER} 版权所有 Kivensoft 2023-2026.");
@@ -81,12 +84,12 @@ fn parse_cfg() -> Option<(AppConf, AppVar)> {
 
     let mut ac = AppConf::default();
     if !appcfg::parse_args(&mut ac, version).expect("解析应用程序参数失败") {
-        return None;
+        return false;
     }
 
     if ac.install {
         syssrv::install();
-        return None;
+        return false;
     }
 
     // 修复网关上下文地址
@@ -112,7 +115,11 @@ fn parse_cfg() -> Option<(AppConf, AppVar)> {
         appcfg::print_banner(&buf, true);
     }
 
-    Some((ac, av))
+    // 初始化全局变量及全局配置
+    AppConf::init(ac);
+    APP_VAR.init(av, "APP_VER.init");
+
+    true
 }
 
 /// 启动计划任务, 做一些定时清理的工作
@@ -120,37 +127,42 @@ async fn run_scheduler() {
     let scheduler = &SCHEDULER;
 
     // 数据库过期token清理
-    scheduler.add_repeat_task(10 * 60, || async {
-        let _ = task::spawn_blocking(db::remove_expired).await;
-    }).await;
+    scheduler
+        .add_repeat_task(10 * 60, || async {
+            let _ = task::spawn_blocking(db::InvalidToken::remove_expired).await;
+        })
+        .await;
 
     // 过期反向代理的上游服务信息清理
-    scheduler.add_repeat_task(10 * 60, || async {
-        let _ = task::spawn_blocking(proxy::services_clean).await;
-    }).await;
+    scheduler
+        .add_repeat_task(3 * 60, || async {
+            let _ = task::spawn_blocking(proxy::services_clean).await;
+        })
+        .await;
 
     // 限速器过期资源清理
-    scheduler.add_repeat_task(10 * 60, || async {
-        let _ = task::spawn_blocking(|| RATE_LIMITER_STATE.recycle()).await;
-    }).await;
+    scheduler
+        .add_repeat_task(2 * 60, || async {
+            let _ = task::spawn_blocking(|| RATE_LIMITER_STATE.recycle()).await;
+        })
+        .await;
 
     tokio::spawn(scheduler.run());
 }
 
-async fn async_main(ac: AppConf, av: AppVar) -> Result<()> {
+async fn async_main() -> Result<()> {
     // 初始化全局变量及全局配置
-    let ac = AppConf::init(ac);
-    APP_VAR.init(av, "APP_VER.init");
+    let ac = AppConf::get();
     let av = APP_VAR.get();
 
-    // 加载配置文件内容
+    // 加载配置文件内容, 允许失败, 失败则相当于没有公共配置
     if !ac.dict_file.is_empty() {
-        let _ = dict::load(&ac.dict_file).await;
+        let _ = dict::load(&make_abs_path(&ac.dict_file));
     }
 
     // 初始化redis连接池
     if !ac.redis.is_empty() {
-        let rc = RedisClient::new(&ac.redis, av.redis_ttl).await.unwrap();
+        let rc = RedisClient::new(&ac.redis, av.redis_ttl).await?;
         REDIS_CLIENT.init(rc, "REDIS_CLIENT.init");
     }
 
@@ -165,55 +177,64 @@ async fn async_main(ac: AppConf, av: AppVar) -> Result<()> {
     // 创建路由器
     let router = build_router();
 
-    // 运行http server主服务
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let addr: std::net::SocketAddr = ac.listen.parse().unwrap();
-    tracing::debug!(%addr,"网关监听地址");
-    tracing::info!("🚀 {} {} running on http://{}", APP_NAME, APP_VER, addr);
+    // ---------- 创建关闭协调器 ----------
+    cfg_if::cfg_if! {
+        if #[cfg(all(unix, feature = "hot-restart"))] {
+            // 这个令牌会用于两个目的：
+            // 1. 传递给 Axum 实现优雅停机
+            // 2. 当收到重启信号时，用它来触发旧进程退出
+            let shutdown_token = tokio_util::sync::CancellationToken::new();
+            let server_token = shutdown_token.clone();
+        } else {
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        }
+    }
 
-    // 启动新的任务来运行服务, 主线任务留给 Ctrl + C 监听器
+    // 运行http server主服务
+    let addr: std::net::SocketAddr = ac.listen.parse()?;
+    debug!(%addr,"网关监听地址");
+    info!("🚀 {} {} running on http://{}", APP_NAME, APP_VER, addr);
+
+    // 启动新的任务运行服务, 主线任务留给 Ctrl + C 监听器
     let http_task = tokio::spawn(async move {
-        // 启动服务器
-        let mut shutdown_rx_clone = shutdown_rx.clone();
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         // 支持获取ConnectInfo, 没有这个将无法获取客户端ip
         let app = router.into_make_service_with_connect_info::<SocketAddr>();
         axum::serve(listener, app)
             .with_graceful_shutdown(async move {
-                let _ = shutdown_rx_clone.changed().await;
-                tracing::info!("⚠️ 收到关闭http服务信号");
+                cfg_if::cfg_if! {
+                    if #[cfg(all(unix, feature = "hot-restart"))] {
+                        server_token.cancelled().await;
+                    } else {
+                        let _ = shutdown_rx.changed().await;
+                    }
+                }
+                info!("⚠️ 收到关闭http服务信号, 开始优雅停机...");
             })
             .await
             .unwrap();
+        debug!("http服务正常关闭");
     });
 
-    // 监听 Ctrl+C 信号
-    tokio::signal::ctrl_c().await.unwrap();
-    tracing::info!("👌 收到 Ctrl+C 信号, 正在关闭应用...");
-    // 向 http 服务发送关闭信号
-    let _ = shutdown_tx.send(true);
-    // 等待10秒后结束应用程序
-    let _ = tokio::time::timeout(Duration::from_secs(10), http_task).await;
+
+    cfg_if::cfg_if! {
+        if #[cfg(all(unix, feature = "hot-restart"))] {
+            crate::reboot::run_as_reboot(&ac.unix_sock, shutdown_token).await;
+        } else {
+            // 监听 Ctrl+C 信号
+            tokio::signal::ctrl_c().await?;
+            info!("👌 收到 Ctrl+C 信号, 正在关闭应用...");
+            // 向 http 服务发送关闭信号
+            let _ = shutdown_tx.send(true);
+            // 等待10秒后结束应用程序
+            let _ = tokio::time::timeout(Duration::from_secs(10), http_task).await;
+        }
+    }
 
     Ok(())
 }
 
-// #[tokio::main(worker_threads = 4)]
-// #[tokio::main(flavor = "current_thread")]
-fn main() {
-    // 初始化应用程序参数
-    let (ac, av) = match parse_cfg() {
-        Some(v) => v,
-        None => return,
-    };
-
-    // 初始化日志
-    let _guard = kv_axum_util::TracingBuilder::new()
-        .directives(&ac.log_filter)
-        .file("logs", &ac.log_file)
-        .disable_console(ac.no_console)
-        .build();
-
+fn build_tokio_runtime(ac: &AppConf) -> tokio::runtime::Runtime {
     macro_rules! parse {
         ($expr:expr, $msg:literal) => {
             $expr.parse::<usize>().expect(arg_err!($msg))
@@ -243,9 +264,28 @@ fn main() {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(async move {
-            if let Err(e) = async_main(ac, av).await {
-                eprintln!("应用程序错误: {e:?}");
-            }
-        })
+}
+
+fn main() {
+    // 初始化应用程序参数
+    if !parse_cfg() {
+        return;
+    };
+
+    let ac = AppConf::get();
+
+    // 初始化日志
+    let _guard = kv_axum_util::TracingBuilder::new()
+        .directives(&ac.log_filter)
+        .file(&make_abs_path("logs"), &ac.log_file)
+        .disable_console(ac.no_console)
+        .build();
+
+    info!(pid = %std::process::id(), "{} 启动中...", APP_NAME);
+
+    build_tokio_runtime(ac).block_on(async move {
+        if let Err(e) = async_main().await {
+            eprintln!("应用程序错误: {e:?}");
+        }
+    })
 }

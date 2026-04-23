@@ -10,6 +10,7 @@ use kv_axum_util::{bean, if_else, unix_timestamp};
 use mini_moka::sync::ConcurrentCacheExt;
 use prost::Message;
 use rclite::Arc;
+use tracing::{error, warn};
 use std::time::Duration;
 use tokio::task;
 
@@ -146,8 +147,8 @@ impl AuthState {
 
     //     let key = self.gen_redis_key(sign);
     //     task::spawn(async move {
-    //         if let Err(e) = REDIS_CLIENT.get().del(key).await {
-    //             tracing::error!(err = %e, "从 redis 删除 key 失败");
+    //         if let Err(err) = REDIS_CLIENT.get().del(key).await {
+    //             error!(%err, "从 redis 删除 key 失败");
     //         }
     //     });
     // }
@@ -166,7 +167,7 @@ impl AuthState {
                 None => return None,
             },
             Err(err) => {
-                tracing::error!(%err, "访问 redis 出现错误");
+                error!(%err, "访问 redis 出现错误");
                 return None;
             },
         };
@@ -174,7 +175,7 @@ impl AuthState {
         let auth_info = match AuthInfo::decode(value.as_ref()) {
             Ok(v) => v,
             Err(err) => {
-                tracing::error!(%err, "解码 AuthInfo 结构失败");
+                error!(%err, "解码 AuthInfo 结构失败");
                 return None;
             },
         };
@@ -191,13 +192,13 @@ impl AuthState {
         let key = self.gen_redis_key(sign);
         let mut value = Vec::with_capacity(AUTH_INFO_ENCODE_SIZE);
         if let Err(err) = auth_info.encode(&mut value) {
-            tracing::error!(%err, "AuthInfo 序列化成 protobuf 失败");
+            error!(%err, "AuthInfo 序列化成 protobuf 失败");
             return;
         }
 
         task::spawn(async move {
             if let Err(err) = REDIS_CLIENT.get().set(key, value).await {
-                tracing::error!(%err, "保存 AuthInfo 到 redis 失败");
+                error!(%err, "保存 AuthInfo 到 redis 失败");
             }
         });
     }
@@ -272,7 +273,7 @@ async fn parse_uid(jwt_token: String, state: &AuthState) -> Option<u32> {
             Some(uid)
         },
         Err(err) => {
-            tracing::error!(%err, "解码 jwt 失败");
+            error!(%err, "解码 jwt 失败");
             None
         },
     }
@@ -283,7 +284,7 @@ fn get_auth_header(req: &Request) -> Option<&str> {
         match auth_value.to_str() {
             Ok(auth_header) => return Some(auth_header),
             Err(_) => {
-                tracing::warn!("请求头部 {} 有无效字符", header::AUTHORIZATION);
+                warn!("请求头部 {} 有无效字符", header::AUTHORIZATION);
             },
         }
     }
@@ -310,7 +311,7 @@ fn decode_sign(out: &mut CacheKey, sign: &str) -> bool {
     match URL_SAFE_NO_PAD.decode_slice(sign.as_bytes(), out) {
         Ok(count) => count == out.len(),
         Err(err) => {
-            tracing::error!(%err, "解码 jwt 签名(base64)失败");
+            error!(%err, "解码 jwt 签名(base64)失败");
             false
         },
     }
@@ -318,7 +319,7 @@ fn decode_sign(out: &mut CacheKey, sign: &str) -> bool {
 
 /// 判断token是否在黑名单中（用户已更新token或者用户已被删除或者已退出登录）
 fn is_blacklist(sign: &str) -> bool {
-    db::exists(sign)
+    db::InvalidToken::exists(sign)
 }
 
 fn get_iss_exp(claims: &JwtClaims) -> (Option<&str>, Option<u64>) {

@@ -12,7 +12,7 @@ use tower_http::{
     classify::{ServerErrorsAsFailures, SharedClassifier},
     trace::{MakeSpan, OnRequest, OnResponse, TraceLayer},
 };
-use tracing::{Event, Level, Span, Subscriber, field::{Field, Visit}};
+use tracing::{Event, Level, Span, Subscriber, debug, error_span, field::{Field, Visit}};
 use tracing_appender::{non_blocking::WorkerGuard, rolling};
 use tracing_log::NormalizeEvent;
 use tracing_subscriber::{
@@ -84,7 +84,7 @@ pub struct CustomOnRequest;
 
 impl<B> OnRequest<B> for CustomOnRequest {
     fn on_request(&mut self, request: &Request<B>, _span: &Span) {
-        tracing::debug!(path = %request.uri().path(), "📥新的请求");
+        debug!(path = %request.uri().path(), "📥新的请求");
     }
 }
 
@@ -99,7 +99,7 @@ impl<B> OnResponse<B> for CustomOnResponse {
             Some(path) => &path.0,
             None => "",
         };
-        tracing::debug!(%path, %latency, %status, "📴请求处理完成");
+        debug!(%path, %latency, %status, "📴请求处理完成");
     }
 }
 
@@ -146,7 +146,7 @@ impl<B> MakeSpan<B> for CustomMakeSpan {
         let id = req_id.map(|id| id.0).unwrap_or(0);
 
         // info_span 表示只要缺省日志级别只要大于等于error, 该span就会被创建
-        tracing::error_span!(
+        error_span!(
             "REQ",
             %id,
             // method = %request.method(),

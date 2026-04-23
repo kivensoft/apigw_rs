@@ -1,5 +1,5 @@
 use axum::{
-    body::Body,
+    body::{Body, HttpBody},
     extract::State,
     http::{HeaderMap, HeaderValue, Request},
     middleware::Next,
@@ -7,8 +7,7 @@ use axum::{
 };
 use bytes::{Bytes, BytesMut};
 use compact_str::CompactString;
-use futures_util::stream::Stream;
-use http_body::Body as HttpBody;
+use futures::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 

@@ -1,9 +1,11 @@
+#[allow(dead_code)]
 pub struct PathIter<'a> {
     path: &'a str,
     finished: bool,
 }
 
 impl<'a> PathIter<'a> {
+    #[allow(dead_code)]
     pub fn new(path: &'a str) -> Self {
         Self { path, finished: false }
     }

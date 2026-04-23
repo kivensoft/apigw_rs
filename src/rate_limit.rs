@@ -11,7 +11,7 @@ use axum::{
 };
 use compact_str::CompactString;
 use dashmap::DashMap;
-use fnv::FnvBuildHasher;
+use fnv::FnvHashMap;
 use governor::{
     Quota, RateLimiter,
     clock::{QuantaClock, QuantaInstant},
@@ -19,7 +19,6 @@ use governor::{
     state::{InMemoryState, NotKeyed},
 };
 use hyper::StatusCode;
-use indexmap::IndexMap;
 use kv_axum_util::{ApiError, bean, if_else};
 use rclite::Arc;
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -111,11 +110,11 @@ impl RateLimiterState {
     }
 
     /// 查询, 当 path.is_empty() 时，返回所有限速器, 当 path 以 "/" 结尾时, 按前缀查找
-    pub fn query(&self, path: &str) -> IndexMap<CompactString, RateLimitCfg, FnvBuildHasher> {
+    pub fn query(&self, path: &str) -> FnvHashMap<CompactString, RateLimitCfg> {
         let get_all = path.is_empty();
         let get_prefix = path.ends_with('/');
         let eq_str = if_else!(get_prefix, &path[..path.len() - 1], "");
-        let mut ret = IndexMap::with_hasher(FnvBuildHasher::default());
+        let mut ret = FnvHashMap::default();
 
         for entry in self.0.iter() {
             let mut inserted = false;
