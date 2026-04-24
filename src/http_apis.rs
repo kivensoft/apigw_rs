@@ -8,14 +8,16 @@ use axum::{
 use kv_axum_util::{ApiError, ApiResult, ClientIp, JsonString, ReqId, api_err, param_from_multi};
 use tracing::debug;
 
-// pub static RATE_LIMITER: StaticVal<Arc<RateLimiter>> = StaticVal::new();
+
+type OptJson<T> = Option<Json<T>>;
+
 
 /// 服务测试，测试服务是否存活
 pub async fn ping(
     Path(path): Path<apis::PingReq>, // 路径中的 reply（如 /ping/{reply}）
     Query(query): Query<apis::PingReq>, // 查询参数中的 reply（如 /ping?reply=xxx）
     ClientIp(ip): ClientIp,          // 客户端 IP
-    body: Option<Json<apis::PingReq>>, // body 中的 reply（如 POST {"reply": "xxx"}）
+    body: OptJson<apis::PingReq>, // body 中的 reply（如 POST {"reply": "xxx"}）
 ) -> JsonString {
     let reply = param_from_multi!(body, query, path, reply, "pong");
     apis::ping(reply, &ip)
@@ -35,11 +37,6 @@ pub async fn token(Json(body): Json<TokenReq>) -> ApiResult<apis::TokenRes> {
     apis::token(uid)
 }
 
-/// 将token加入黑名单
-pub async fn blacklist(Json(body): Json<apis::BlacklistReq>) -> ApiResult<()> {
-    apis::blacklist(&body.token)
-}
-
 /// 注册服务查询
 pub async fn query(Json(body): Json<apis::QueryReq>) -> ApiResult<proxy::EndPointDisplayMap> {
     apis::query(&body.paths)
@@ -56,7 +53,7 @@ pub async fn unreg(Json(body): Json<apis::UnregReq>) -> ApiResult<()> {
 }
 
 /// 获取配置信息
-pub async fn cfg(body: Option<Json<apis::SimpleQueryReq>>) -> ApiResult<apis::CfgRes> {
+pub async fn cfg(body: OptJson<apis::SimpleQueryReq>) -> ApiResult<apis::CfgRes> {
     let q = body.as_ref().and_then(|v| v.q.as_ref()).map_or("", |s| s);
     apis::cfg(q).await
 }
@@ -73,7 +70,7 @@ pub async fn rate(Json(body): Json<apis::RateReq>) -> ApiResult<()> {
 }
 
 /// 查询所有限流器
-pub async fn rates(body: Option<Json<apis::SimpleQueryReq>>) -> ApiResult<apis::RatesRes> {
+pub async fn rates(body: OptJson<apis::SimpleQueryReq>) -> ApiResult<apis::RatesRes> {
     let q = body.as_ref().and_then(|v| v.0.q.as_ref()).map_or("", |s| s);
     apis::rates(q)
 }

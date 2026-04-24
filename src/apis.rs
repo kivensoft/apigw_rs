@@ -14,7 +14,7 @@ use crate::{
     appconf::AppConf,
     appvars::{APP_VAR, RATE_LIMITER_STATE},
     auth::JwtClaims,
-    db, dict, efmt, err, proxy,
+    dict, efmt, err, proxy,
     rate_limit::{RateLimitCfg, RateLimiterType},
     utils,
 };
@@ -105,25 +105,6 @@ pub fn token(uid: u32) -> ApiResult<TokenRes> {
         kjwt::encode_raw(claims_b64, &ac.jwt_key).map_err(|e| err!("编码jwt失败: {:?}", e))?;
 
     api_ok!(TokenRes { token })
-}
-
-#[bean(deser)]
-pub struct BlacklistReq {
-    pub token: String,
-}
-
-/// 将token加入黑名单
-pub fn blacklist(token: &str) -> ApiResult<()> {
-    let ac = AppConf::get();
-    if ac.jwt_key.is_empty() {
-        api_err!("jwt token generation is not supported");
-    }
-
-    if let Some((sign, exp)) = utils::parse_token_sign_exp(token) {
-        db::InvalidToken::put(sign, exp)?;
-    }
-
-    api_ok!()
 }
 
 #[bean(deser)]

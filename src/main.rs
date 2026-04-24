@@ -2,7 +2,6 @@ mod apis;
 mod appconf;
 mod appvars;
 mod auth;
-mod db;
 mod dict;
 mod http_apis;
 mod macros;
@@ -126,13 +125,6 @@ fn parse_cfg() -> bool {
 async fn run_scheduler() {
     let scheduler = &SCHEDULER;
 
-    // 数据库过期token清理
-    scheduler
-        .add_repeat_task(10 * 60, || async {
-            let _ = task::spawn_blocking(db::InvalidToken::remove_expired).await;
-        })
-        .await;
-
     // 过期反向代理的上游服务信息清理
     scheduler
         .add_repeat_task(3 * 60, || async {
@@ -164,11 +156,6 @@ async fn async_main() -> Result<()> {
     if !ac.redis.is_empty() {
         let rc = RedisClient::new(&ac.redis, av.redis_ttl).await?;
         REDIS_CLIENT.init(rc, "REDIS_CLIENT.init");
-    }
-
-    // 初始化无效token数据库
-    if !ac.db_file.is_empty() {
-        db::init(&make_abs_path(&ac.db_file));
     }
 
     // 创建定时任务

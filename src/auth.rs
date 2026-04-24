@@ -14,7 +14,7 @@ use tracing::{error, warn};
 use std::time::Duration;
 use tokio::task;
 
-use crate::{appvars::{APP_VAR, REDIS_CLIENT}, db};
+use crate::appvars::{APP_VAR, REDIS_CLIENT};
 
 const AUTH_INFO_ENCODE_SIZE: usize = 64;
 
@@ -140,11 +140,11 @@ impl AuthState {
     //     if use_local {
     //         self.token_cache.invalidate(&sign_bs);
     //     }
-
+    //
     //     if !APP_VAR.get().use_redis {
     //         return;
     //     }
-
+    //
     //     let key = self.gen_redis_key(sign);
     //     task::spawn(async move {
     //         if let Err(err) = REDIS_CLIENT.get().del(key).await {
@@ -250,11 +250,6 @@ async fn parse_uid(jwt_token: String, state: &AuthState) -> Option<u32> {
         None => return None,
     };
 
-    // 如果签名在黑名单中存在(表示 token 无效)
-    if is_blacklist(sign) {
-        return None;
-    }
-
     let now = unix_timestamp();
 
     // 从缓存中加载解码信息成功, 直接返回
@@ -315,11 +310,6 @@ fn decode_sign(out: &mut CacheKey, sign: &str) -> bool {
             false
         },
     }
-}
-
-/// 判断token是否在黑名单中（用户已更新token或者用户已被删除或者已退出登录）
-fn is_blacklist(sign: &str) -> bool {
-    db::InvalidToken::exists(sign)
 }
 
 fn get_iss_exp(claims: &JwtClaims) -> (Option<&str>, Option<u64>) {
