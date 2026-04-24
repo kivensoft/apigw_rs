@@ -1,6 +1,6 @@
 //! 网关应用提供的服务接口
 
-use crate::{apis, appconf::AppConf, auth::UserId, proxy};
+use crate::{apis::{self, TokenReq}, appconf::AppConf, auth::UserId, proxy};
 use axum::{
     Json,
     extract::{Path, Query, Request}, response::IntoResponse,
@@ -27,7 +27,8 @@ pub async fn status() -> ApiResult<apis::StatusRes> {
 }
 
 /// 生成token，生成jwt格式token
-pub async fn token(Path(uid): Path<u32>) -> ApiResult<apis::TokenRes> {
+pub async fn token(Json(body): Json<TokenReq>) -> ApiResult<apis::TokenRes> {
+    let uid = body.uid;
     if uid == 0 {
         api_err!("uid 必须大于0");
     }
@@ -55,8 +56,8 @@ pub async fn unreg(Json(body): Json<apis::UnregReq>) -> ApiResult<()> {
 }
 
 /// 获取配置信息
-pub async fn cfg(Json(body): Json<apis::SimpleQueryReq>) -> ApiResult<apis::CfgRes> {
-    let q = body.q.as_ref().map_or("", |s| s);
+pub async fn cfg(body: Option<Json<apis::SimpleQueryReq>>) -> ApiResult<apis::CfgRes> {
+    let q = body.as_ref().and_then(|v| v.q.as_ref()).map_or("", |s| s);
     apis::cfg(q).await
 }
 

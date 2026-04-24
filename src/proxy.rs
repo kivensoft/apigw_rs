@@ -71,26 +71,28 @@ static CLIENT: OnceLock<ProxyClient> = OnceLock::new();
 pub fn register_service(path: &str, endpoint: &str, ttl: u32) -> bool {
     // 注册服务的过期时间
     let expire_at = Now::new().expire_at(ttl as u64);
+    let path = normalize_for_map(path);
 
-    // 获取路径对应的key, 不存在则新建
-    let vec = SERVICES
+    // 获取路径对应的端点列表, 不存在则新建
+    let endpoint_cfg_vec = SERVICES
         .write()
-        .entry(path)
+        .entry(&path)
         .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())))
         .clone();
 
-    let mut vec_guard = vec.lock();
+    let mut endpoint_cfg_vec_guard = endpoint_cfg_vec.lock();
 
-    for entry in vec_guard.iter_mut() {
-        if endpoint == entry.endpoint {
-            entry.expire_at = expire_at;
+    for endpoint_cfg in endpoint_cfg_vec_guard.iter_mut() {
+        if endpoint == endpoint_cfg.endpoint {
+            endpoint_cfg.expire_at = expire_at;
             debug!(%path, %endpoint, %ttl, "代理服务心跳更新成功");
             // 返回 false, 表示是更新反向代理服务信息而不是新建
             return false;
         }
     }
 
-    vec_guard.push_back(EndpointConfig { endpoint: endpoint.into(), expire_at });
+    let endpoint_cfg = EndpointConfig { endpoint: endpoint.into(), expire_at };
+    endpoint_cfg_vec_guard.push_back(endpoint_cfg);
     debug!(%path, %endpoint, %ttl, "代理服务新注册成功");
     true
 }
@@ -113,26 +115,27 @@ pub fn unregister_service(endpoint: &str) {
     }
 
     // 输出被移除的代理服务信息到日志中
-    let mut paths = SmallString::<[u8; 512]>::new();
+    let mut remove_endpoint_paths = SmallString::<[u8; 512]>::new();
     for path in &wait_del_paths {
-        paths.push_str(path);
+        remove_endpoint_paths.push_str(normalize_for_display(path));
     }
-    debug!(%paths, %endpoint, "移除代理服务信息");
-    paths.clear();
 
     // 删除所有匹配的 endpoint 对应的 path (当代理列表为空时)
+    let mut remove_paths = SmallString::<[u8; 512]>::new();
     let mut srv_guard = SERVICES.write();
     for path in wait_del_paths {
         if let Some(cfg_vec) = srv_guard.get(&path)
             && cfg_vec.lock().is_empty()
         {
-            paths.push_str(&path);
+            remove_paths.push_str(normalize_for_display(&path));
             srv_guard.remove(&path);
         }
     }
     drop(srv_guard);
+
     // 输出已删除的路径列表
-    debug!(%paths, "删除代理列表为空的路径");
+    debug!(%remove_endpoint_paths, %endpoint, "移除代理服务信息");
+    debug!(%remove_endpoint_paths, "删除代理列表为空的路径");
 }
 
 /// 列出当前注册的所有服务信息
@@ -147,7 +150,8 @@ pub fn service_list() -> EndPointDisplayMap {
 
     for (key, value) in srv_guard.iter() {
         if let Some(valid_endpoints) = copy_valid_endpionts(value, &now) {
-            let path = unsafe { String::from_utf8_unchecked(key) };
+            let mut path = unsafe { String::from_utf8_unchecked(key) };
+            normalize_for_display2(&mut path);
             valid_endpoint_map.insert(path, valid_endpoints);
         }
     }
@@ -206,7 +210,9 @@ pub fn services_clean() {
 
         // 如果清理后服务列表为空, 则记录将被删除的路径, 后续日志输出需要
         if endpoints.is_empty() {
-            del_keys.push(unsafe { String::from_utf8_unchecked(key) });
+            let mut path = unsafe { String::from_utf8_unchecked(key) };
+            normalize_for_display2(&mut path);
+            del_keys.push(path);
         }
     }
 
@@ -312,8 +318,9 @@ fn expire_at_to_datetime(expire: u64) -> Option<LocalDateTime> {
 /// 根据api路径查找对应的服务端点, 如果同一个路径有多个服务端点, 则采用轮询方式
 fn find_endpoint(path: &str) -> Option<CompactString> {
     let now = Now::new();
+    let path = normalize_for_map(path);
 
-    let endpoints = match SERVICES.read().get_longest_common_prefix(path) {
+    let endpoints = match SERVICES.read().get_longest_common_prefix(&path) {
         Some((_, value)) => value.clone(),
         None => return None,
     };
@@ -361,6 +368,41 @@ fn copy_valid_endpionts(endpoints: &EndpointConfigVec, now: &Now) -> Option<EndP
     }
 
     if_else!(!result.is_empty(), Some(result), None)
+}
+
+/// 规范化路径, '/' 开头, '/' 结尾
+fn normalize_for_map(path: &str) -> CompactString {
+
+    let mut result = CompactString::default();
+    if !path.is_empty() {
+        if path.as_bytes()[0] != b'/' {
+            result.push('/');
+        }
+
+        result.push_str(path);
+
+        if result.as_bytes()[result.len() - 1] != b'/' {
+            result.push('/');
+        }
+    }
+
+    result
+}
+
+/// 删除末尾的 '/', 返回用户友好的可显示的路径表达
+fn normalize_for_display(path: &str) -> &str {
+    if !path.is_empty() && path.as_bytes()[path.len() - 1] == b'/' {
+        &path[..path.len() - 1]
+    } else {
+        path
+    }
+}
+
+/// 删除末尾的 '/', 返回用户友好的可显示的路径表达
+fn normalize_for_display2(path: &mut String) {
+    if !path.is_empty() && path.as_bytes()[path.len() - 1] == b'/' {
+        path.truncate(path.len() - 1);
+    }
 }
 
 fn get_client() -> &'static ProxyClient {

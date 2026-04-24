@@ -1,4 +1,4 @@
-use axum::{Router, middleware::from_fn_with_state};
+use axum::{Router, middleware::from_fn_with_state, routing::{get, post}};
 use kv_axum_util::{ReqIdGenerator, capture_response_body, custom_trace_layer, req_id_middleware};
 use rclite::Arc;
 use tower_http::cors::CorsLayer;
@@ -17,31 +17,25 @@ macro_rules! path {
     };
 }
 
-macro_rules! api {
-    ($func:ident) => {
-        axum::routing::get($func).post($func)
-    };
-}
-
 fn build_gw_router() -> (&'static str, Router) {
     use crate::http_apis::*;
 
     let gw_router = Router::new()
-        .route(path!("ping"), api!(ping))
-        .route(path!("ping/{reply}"), api!(ping))
-        .route(path!("status"), api!(status))
-        .route(path!("token/{uid}"), api!(token))
-        .route(path!("blacklist"), api!(blacklist))
-        .route(path!("query"), api!(query))
-        .route(path!("query/{paths}"), api!(query))
-        .route(path!("reg"), api!(reg))
-        .route(path!("unreg"), api!(unreg))
-        .route(path!("cfg"), api!(cfg))
-        .route(path!("cfg/{q}"), api!(token))
-        .route(path!("recfg"), api!(recfg))
-        .route(path!("rate"), api!(rate))
-        .route(path!("rates"), api!(rates))
-        .route(path!("rate_del"), api!(rate_del));
+        .route(path!("ping"), get(ping).post(ping))
+        .route(path!("ping/{reply}"), get(ping).post(ping))
+        .route(path!("status"), post(status))
+        .route(path!("token"), post(token))
+        .route(path!("blacklist"), post(blacklist))
+        .route(path!("query"), post(query))
+        .route(path!("query/{paths}"), post(query))
+        .route(path!("reg"), post(reg))
+        .route(path!("unreg"), post(unreg))
+        .route(path!("cfg"), post(cfg))
+        .route(path!("cfg/{q}"), post(token))
+        .route(path!("recfg"), post(recfg))
+        .route(path!("rate"), post(rate))
+        .route(path!("rates"), post(rates))
+        .route(path!("rate_del"), post(rate_del));
 
     let gw = AppConf::get().gw_prefix.as_str();
     let gw = gw.trim_end_matches('/');

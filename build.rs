@@ -32,9 +32,11 @@ fn copy_files(sources: &[&str]) {
                 panic!("Failed to copy {}", src);
             }
 
-            println!("cargo:warning={} copied to {}", src, dst_path.to_str().unwrap());
+            // println!("cargo:warning={} copied to {}", src, dst_path.to_str().unwrap());
+            println!("{} copied to {}", src, dst_path.to_str().unwrap());
         } else {
-            println!("cargo:warning={} not found at {}", src, src_path.to_str().unwrap());
+            // println!("cargo:warning={} not found at {}", src, src_path.to_str().unwrap());
+            println!("{} not found at {}", src, src_path.to_str().unwrap());
         }
     }
 }

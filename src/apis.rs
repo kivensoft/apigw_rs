@@ -67,6 +67,11 @@ pub fn status() -> ApiResult<StatusRes> {
     })
 }
 
+#[bean(deser)]
+pub struct TokenReq {
+    pub uid: u32,
+}
+
 #[bean(ser)]
 pub struct TokenRes {
     pub token: String,

@@ -113,7 +113,7 @@ impl RateLimiterState {
     pub fn query(&self, path: &str) -> FnvHashMap<CompactString, RateLimitCfg> {
         let get_all = path.is_empty();
         let get_prefix = path.ends_with('/');
-        let eq_str = if_else!(get_prefix, &path[..path.len() - 1], "");
+        let eq_str = if_else!(get_prefix, &path[..path.len() - 1], path);
         let mut ret = FnvHashMap::default();
 
         for entry in self.0.iter() {
