@@ -46,7 +46,7 @@ pub fn build_router() -> Router {
     let av = APP_VAR.get();
 
     let mtcs = ac.mtcs.parse().expect("mtcs 不是数字格式");
-    let auth_state = AuthState::new(&ac.jwt_key, &ac.jwt_iss, &ac.redis_prefix, mtcs, av.redis_ttl);
+    let auth_state = AuthState::new(&ac.jwt_key, &ac.jwt_iss, mtcs, av.redis_ttl);
     let rate_limiter_state = RATE_LIMITER_STATE.clone();
 
     let (gw_path, gw_router) = build_gw_router();

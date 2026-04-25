@@ -1,7 +1,6 @@
 use std::sync::LazyLock;
 
 use kv_axum_util::SimpleScheduler;
-use kv_redis::RedisClient;
 
 use crate::{rate_limit::RateLimiterState, static_val::StaticVal};
 
@@ -10,7 +9,7 @@ pub struct AppVar {
     pub heartbeat_interval: u32,
     pub jwt_ttl: u32,
     pub redis_ttl: u32,
-    pub use_redis: bool,
+    // pub use_redis: bool,
     pub srv_conn_timeout: u32,
 }
 
@@ -18,7 +17,7 @@ pub static APP_VAR: StaticVal<AppVar> = StaticVal::new();
 
 pub static SCHEDULER: LazyLock<SimpleScheduler> = LazyLock::new(|| SimpleScheduler::new(60));
 pub static RATE_LIMITER_STATE: LazyLock<RateLimiterState> = LazyLock::new(RateLimiterState::new);
-pub static REDIS_CLIENT: StaticVal<RedisClient> = StaticVal::new();
+// pub static REDIS_CLIENT: StaticVal<RedisClient> = StaticVal::new();
 
 pub const BANNER: &str = r#"
     ___          _    ______      __  Kivensoft ?

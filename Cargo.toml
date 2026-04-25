@@ -105,7 +105,7 @@ appcfg = { version = "1", features = ["chinese"] } # 支持命令行参数解析
 localtime = { git = "https://gitee.com/kivensoft/localtime_rs.git" } # 本地时间序列化反序列化库
 kjwt = { git = "https://gitee.com/kivensoft/jwt_rs.git" } # jwt库
 kv_axum_util = { path = "kv_axum_util" } # axum 框架的扩展库
-kv_redis = { path = "kv_redis" } # redis 扩展库
+# kv_redis = { path = "kv_redis" } # redis 扩展库
 
 
 # 只在 musl 目标下启用 mimalloc

@@ -49,16 +49,17 @@ pub struct EndpointDisplay {
     pub expire_at: Option<LocalDateTime>,
 }
 
+#[bean]
 #[derive(Clone)]
-struct EndpointConfig {
+pub struct EndpointConfig {
     // 端点信息, 例如 127.0.0.1:8080
-    endpoint: CompactString,
+    pub endpoint: CompactString,
     // 基于 unix timestamp 的过期时间
-    expire_at: u64,
+    pub expire_at: u64,
 }
 
 /// 已注册的服务列表
-static SERVICES: LazyLock<ServiceMap> = LazyLock::new(|| RwLock::new(RadixMap::new()));
+pub static SERVICES: LazyLock<ServiceMap> = LazyLock::new(|| RwLock::new(RadixMap::new()));
 /// http request 请求的客户端，内部使用缓存池
 static CLIENT: OnceLock<ProxyClient> = OnceLock::new();
 

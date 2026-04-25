@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{
     extract::{FromRequestParts, Request, State},
     http::request::Parts,
@@ -8,22 +10,14 @@ use compact_str::CompactString;
 use hyper::header;
 use kv_axum_util::{bean, if_else, unix_timestamp};
 use mini_moka::sync::ConcurrentCacheExt;
-use prost::Message;
 use rclite::Arc;
-use tracing::{error, warn};
-use std::time::Duration;
 use tokio::task;
+use tracing::{error, warn};
 
-use crate::appvars::{APP_VAR, REDIS_CLIENT};
 
-const AUTH_INFO_ENCODE_SIZE: usize = 64;
-
-#[derive(prost::Message)]
+#[bean(ser, deser)]
 pub struct AuthInfo {
-    #[prost(uint64, tag = "1")]
     pub exp: u64,
-
-    #[prost(uint32)]
     pub uid: u32,
 }
 
@@ -58,7 +52,6 @@ type TokenCache = Cache<CacheKey, Arc<AuthInfo>>;
 pub struct AuthState {
     pub key: String,
     pub iss: String,
-    pub redis_prefix: String,
     pub token_cache: Arc<TokenCache>,
 }
 
@@ -70,12 +63,11 @@ impl AuthState {
     /// * `cache_cap` 签名校验缓存允许的最大条目
     /// * `cache_ttl` 签名校验缓存项的最大生存时间(单位：秒), 本地缓存及二级缓存共用
     pub fn new<S: Into<String>>(
-        key: S, iss: S, redis_prefix: S, cache_cap: u32, cache_ttl: u32,
+        key: S, iss: S, cache_cap: u32, cache_ttl: u32,
     ) -> Self {
         let auth_state = AuthState {
             key: key.into(),
             iss: iss.into(),
-            redis_prefix: redis_prefix.into(),
             token_cache: Arc::new(
                 Cache::builder()
                     .max_capacity(cache_cap as u64)
@@ -98,7 +90,7 @@ impl AuthState {
     }
 
     /// 从多级缓存中加载数据, 优先从本地缓存中读取, 没有则转到二级缓存中读取
-    async fn load_from_multi_cache(&self, sign: &str) -> Option<Arc<AuthInfo>> {
+    fn cache_load(&self, sign: &str) -> Option<Arc<AuthInfo>> {
         // 优先从本地缓存中读取
         let mut sign_bs = CacheKey::default();
         let use_local = decode_sign(&mut sign_bs, sign);
@@ -109,113 +101,23 @@ impl AuthState {
             }
         }
 
-        // 尝试从二级缓存 redis 中读取
-        let result = self.load_from_redis(sign).await;
-        if let Some(auth_info) = &result {
-            self.token_cache.insert(sign_bs, auth_info.clone());
-        }
-        result
+        None
     }
 
     /// 保存到本地缓存及二级缓存中
-    fn save_to_multi_cache(&self, sign: &str, auth_info: Arc<AuthInfo>) {
+    fn cache_save(&self, sign: &str, auth_info: Arc<AuthInfo>) {
         // 本地缓存中已存在, 直接返回
         let mut sign_bs = CacheKey::default();
         let use_local = decode_sign(&mut sign_bs, sign);
-        if use_local && self.token_cache.contains_key(&sign_bs) {
-            return;
-        }
 
-        // 保存到二级缓存
-        self.save_to_redis(sign, &auth_info);
         // 保存到本地缓存
-        if use_local {
+        if use_local && !self.token_cache.contains_key(&sign_bs) {
             self.token_cache.insert(sign_bs, auth_info);
         }
     }
 
-    // fn remove_from_multi_cache(&self, sign: &str) {
-    //     let mut sign_bs = CacheKey::default();
-    //     let use_local = decode_sign(&mut sign_bs, sign);
-    //     if use_local {
-    //         self.token_cache.invalidate(&sign_bs);
-    //     }
-    //
-    //     if !APP_VAR.get().use_redis {
-    //         return;
-    //     }
-    //
-    //     let key = self.gen_redis_key(sign);
-    //     task::spawn(async move {
-    //         if let Err(err) = REDIS_CLIENT.get().del(key).await {
-    //             error!(%err, "从 redis 删除 key 失败");
-    //         }
-    //     });
-    // }
-
-    /// 从 redis 中加载签名对应的认证信息
-    async fn load_from_redis(&self, sign: &str) -> Option<Arc<AuthInfo>> {
-        if !APP_VAR.get().use_redis {
-            return None;
-        }
-
-        let key = self.gen_redis_key(sign);
-
-        let value: Vec<u8> = match REDIS_CLIENT.get().get(&key).await {
-            Ok(v) => match v {
-                Some(s) => s,
-                None => return None,
-            },
-            Err(err) => {
-                error!(%err, "访问 redis 出现错误");
-                return None;
-            },
-        };
-
-        let auth_info = match AuthInfo::decode(value.as_ref()) {
-            Ok(v) => v,
-            Err(err) => {
-                error!(%err, "解码 AuthInfo 结构失败");
-                return None;
-            },
-        };
-
-        Some(Arc::new(auth_info))
-    }
-
-    /// 保存签名对应的信息到 redis (异步方式保存)
-    fn save_to_redis(&self, sign: &str, auth_info: &AuthInfo) {
-        if !APP_VAR.get().use_redis {
-            return;
-        }
-
-        let key = self.gen_redis_key(sign);
-        let mut value = Vec::with_capacity(AUTH_INFO_ENCODE_SIZE);
-        if let Err(err) = auth_info.encode(&mut value) {
-            error!(%err, "AuthInfo 序列化成 protobuf 失败");
-            return;
-        }
-
-        task::spawn(async move {
-            if let Err(err) = REDIS_CLIENT.get().set(key, value).await {
-                error!(%err, "保存 AuthInfo 到 redis 失败");
-            }
-        });
-    }
-
-    /// 根据`sign`生成 redis 的 key
-    fn gen_redis_key(&self, sign: &str) -> String {
-        let mut key = String::with_capacity(128);
-        key.push_str(&self.redis_prefix);
-        key.push(':');
-        key.push_str(CK_JWT);
-        key.push(':');
-        key.push_str(sign);
-        key
-    }
 }
 
-const CK_JWT: &str = "jwt";
 const BEARER: &str = "Bearer ";
 
 pub async fn auth_middleware(
@@ -230,7 +132,7 @@ pub async fn auth_middleware(
         };
 
         // 从认证令牌解析用户ID, 解析成功是用户id, 解析失败是 0
-        let uid = parse_uid(jwt_token, &state).await.unwrap_or(0);
+        let uid = parse_uid(jwt_token, &state).unwrap_or(0);
 
         // 将数据存入请求扩展
         req.extensions_mut().insert(UserId(uid));
@@ -239,21 +141,18 @@ pub async fn auth_middleware(
     next.run(req).await
 }
 
-async fn parse_uid(jwt_token: String, state: &AuthState) -> Option<u32> {
+fn parse_uid(jwt_token: String, state: &AuthState) -> Option<u32> {
     if jwt_token.is_empty() {
         return None;
     }
 
     // 获取 token 中的签名
-    let sign = match kjwt::get_sign(&jwt_token) {
-        Some(sign) => sign,
-        None => return None,
-    };
+    let sign = kjwt::get_sign(&jwt_token)?;
 
     let now = unix_timestamp();
 
     // 从缓存中加载解码信息成功, 直接返回
-    if let Some(auth_info) = state.load_from_multi_cache(sign).await {
+    if let Some(auth_info) = state.cache_load(sign) {
         // 判断过期时间
         return if_else!(now <= auth_info.exp, Some(auth_info.uid), None);
     }
@@ -264,7 +163,7 @@ async fn parse_uid(jwt_token: String, state: &AuthState) -> Option<u32> {
             let uid = claims.uid;
             let auth_info = Arc::new(AuthInfo { exp: claims.exp, uid: claims.uid });
             // 保存到缓存
-            state.save_to_multi_cache(sign, auth_info);
+            state.cache_save(sign, auth_info);
             Some(uid)
         },
         Err(err) => {

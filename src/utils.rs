@@ -1,5 +1,3 @@
-use base64::{Engine, engine::general_purpose};
-use serde_json::Value;
 
 /// 规范化路径
 pub fn normalize_path(path: &str, end_sep: bool) -> String {
@@ -40,34 +38,6 @@ pub fn normalize_paths(paths: &[&str], end_sep: bool) -> String {
     }
 
     unsafe { String::from_utf8_unchecked(out) }
-}
-
-/// 解析jwt token中的claims部分, 返回签名和过期时间
-pub fn parse_token_sign_exp(token: &str) -> Option<(&str, u64)> {
-    fn parse_exp(b64: &str) -> Option<u64> {
-        let bytes = general_purpose::URL_SAFE_NO_PAD.decode(b64.as_bytes());
-        if let Ok(bytes) = bytes
-            && let Ok(claims) = serde_json::from_slice::<Value>(&bytes)
-            && let Some(exp) = claims.get("exp")
-            && let Some(exp) = exp.as_u64()
-        {
-            return Some(exp);
-        }
-        None
-    }
-
-    let mut iter = token.split('.');
-    // 跳过头部
-    if iter.next().is_some() {
-        // 读取claims部分 && 读取签名部分
-        if let Some(claims_b64) = iter.next()
-            && let Some(exp) = parse_exp(claims_b64)
-            && let Some(sign) = iter.next()
-        {
-            return Some((sign, exp));
-        }
-    }
-    None
 }
 
 /// 从 vec 中删除 indices 指定索引值的元素, indices 的索引值必须从小到大排列,

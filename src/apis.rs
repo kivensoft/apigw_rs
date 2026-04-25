@@ -16,7 +16,6 @@ use crate::{
     auth::JwtClaims,
     dict, efmt, err, proxy,
     rate_limit::{RateLimitCfg, RateLimiterType},
-    utils,
 };
 
 #[bean(deser)]

@@ -27,8 +27,18 @@ use strum::{EnumCount, EnumIter, FromRepr};
 use crate::auth::UserId;
 
 /// 限速器类型
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize_repr, Deserialize_repr,
-    FromRepr, EnumCount, EnumIter)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Serialize_repr,
+    Deserialize_repr,
+    FromRepr,
+    EnumCount,
+    EnumIter,
+)]
 #[repr(u32)]
 pub enum RateLimiterType {
     /// 全局限速
@@ -76,10 +86,9 @@ struct RateLimitInfo {
 }
 
 #[derive(Clone)]
-pub struct RateLimiterState(Arc<DashMap<CompactString, RateLimitInfo>>);
+pub struct RateLimiterState(pub Arc<DashMap<CompactString, RateLimitInfo>>);
 
 impl RateLimiterState {
-
     pub fn new() -> Self {
         Self(Arc::new(DashMap::new()))
     }
@@ -99,12 +108,12 @@ impl RateLimiterState {
                 GenericRateLimiter::IP(limiter) => {
                     limiter.retain_recent();
                     limiter.shrink_to_fit();
-                }
+                },
                 GenericRateLimiter::UserId(limiter) => {
                     limiter.retain_recent();
                     limiter.shrink_to_fit();
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
     }
@@ -181,8 +190,11 @@ impl RateLimiterState {
         let rate_limiter = Self::new_rate_limiter(rtype, per_second, seconds, allow_burst);
         let config = RateLimitCfg { rtype, per_second, seconds, allow_burst };
         let info = RateLimitInfo { config, rate_limiter };
+        let path = path.into();
 
-        self.0.insert(path.into(), info);
+        self.0.insert(path.clone(), info);
+
+        tracing::info!(%path, rtype = %rtype as u32, %per_second, %seconds, %allow_burst, "创建限速器");
     }
 
     /// 创建新的限速器

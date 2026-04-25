@@ -4,6 +4,7 @@ mod appvars;
 mod auth;
 mod dict;
 mod http_apis;
+mod keep_state;
 mod macros;
 mod path_iter;
 mod proxy;
@@ -15,19 +16,18 @@ mod static_val;
 mod syssrv;
 mod utils;
 
-use std::{env, fmt::Write, net::SocketAddr, time::Duration};
+use std::{env, fmt::Write, net::SocketAddr, path::{Path, PathBuf}, time::Duration};
 
 use anyhow::Result;
 use appvars::AppVar;
 use compact_str::CompactString;
-use kv_redis::RedisClient;
 use smallstr::SmallString;
 use tokio::task;
 use tracing::{debug, error, info};
 
 use crate::{
     appconf::AppConf,
-    appvars::{APP_NAME, APP_VAR, APP_VER, BANNER, RATE_LIMITER_STATE, REDIS_CLIENT, SCHEDULER},
+    appvars::{APP_NAME, APP_VAR, APP_VER, BANNER, RATE_LIMITER_STATE, SCHEDULER},
     routes::build_router,
 };
 
@@ -56,22 +56,13 @@ fn get_app_path() -> CompactString {
     "".into()
 }
 
-fn make_abs_path(db_path: &str) -> String {
-    #[cfg(not(target_os = "windows"))]
-    {
-        if db_path.as_bytes()[0] == b'/' {
-            db_path.to_string()
-        } else {
-            format!("{}/{}", get_app_path(), db_path)
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if db_path.len() > 2 && db_path.as_bytes()[1] == b':' {
-            db_path.to_string()
-        } else {
-            format!(r#"{}\{}"#, get_app_path(), db_path)
-        }
+fn make_abs_path(path: &str) -> String {
+    if Path::new(path).is_absolute() {
+        path.into()
+    } else {
+        let mut pb = PathBuf::from(&get_app_path());
+        pb.push(path);
+        pb.to_str().unwrap_or(path).into()
     }
 }
 
@@ -104,7 +95,7 @@ fn parse_cfg() -> bool {
         heartbeat_interval: ac.expire_time.parse().expect(arg_err!("expire-time")),
         jwt_ttl: ac.jwt_ttl.parse().expect(arg_err!("jwt-ttl")),
         redis_ttl: ac.redis_ttl.parse().expect(arg_err!("redis-ttl")),
-        use_redis: !ac.redis.is_empty(),
+        // use_redis: !ac.redis.is_empty(),
         srv_conn_timeout: ac.conn_timeout.parse().expect(arg_err!("conn-timeout")),
     };
 
@@ -145,7 +136,7 @@ async fn run_scheduler() {
 async fn async_main() -> Result<()> {
     // 初始化全局变量及全局配置
     let ac = AppConf::get();
-    let av = APP_VAR.get();
+    // let av = APP_VAR.get();
 
     // 加载配置文件内容, 允许失败, 失败则相当于没有公共配置
     if !ac.dict_file.is_empty() {
@@ -153,10 +144,10 @@ async fn async_main() -> Result<()> {
     }
 
     // 初始化redis连接池
-    if !ac.redis.is_empty() {
-        let rc = RedisClient::new(&ac.redis, av.redis_ttl).await?;
-        REDIS_CLIENT.init(rc, "REDIS_CLIENT.init");
-    }
+    // if !ac.redis.is_empty() {
+    //     let rc = RedisClient::new(&ac.redis, av.redis_ttl).await?;
+    //     REDIS_CLIENT.init(rc, "REDIS_CLIENT.init");
+    // }
 
     // 创建定时任务
     run_scheduler().await;
@@ -270,9 +261,13 @@ fn main() {
 
     info!(pid = %std::process::id(), "{} 启动中...", APP_NAME);
 
+    keep_state::load_state();
+
     build_tokio_runtime(ac).block_on(async move {
         if let Err(e) = async_main().await {
             eprintln!("应用程序错误: {e:?}");
         }
-    })
+    });
+
+    keep_state::save_state();
 }
