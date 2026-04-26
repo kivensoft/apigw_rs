@@ -2,7 +2,7 @@
 # cargo test -- --nocapture utils::unix_crypt::tests::test_rand_password
 [package]
 name = "apigw"
-version = "0.9.11"
+version = "0.9.20"
 authors = ["kiven <kivensoft@gmail.com>"]
 edition = "2024"
 description = "intelligent community api gateway"

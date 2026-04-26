@@ -116,14 +116,75 @@ macro_rules! api_err {
 /// 通用api接口函数返回值
 pub type ApiResult<T> = Result<ApiRes<T>, ApiError>;
 
+
+
 /// axum的客户端IP提取器, 当这个与 body 的 [Json] 提取器一起使用时, 请将这个放在 body 参数之前
 pub struct ClientIp(pub CompactString);
+
+impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+    type Rejection = std::convert::Infallible;
+
+    #[allow(clippy::manual_async_fn)]
+    fn from_request_parts(
+        parts: &mut Parts, _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        async move {
+            let real_ip = parts
+                .headers
+                .get("X-Forwarded-For")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .map(|s| s.trim().to_compact_string())
+                .or_else(|| {
+                    parts
+                        .headers
+                        .get("X-Real-IP")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_compact_string())
+                })
+                .unwrap_or_else(|| {
+                    parts
+                        .extensions
+                        .get::<ConnectInfo<SocketAddr>>()
+                        .map(|ci| ci.0.ip().to_compact_string())
+                        .unwrap_or_else(|| "unknown".to_compact_string())
+                });
+
+            Ok(ClientIp(real_ip))
+        }
+    }
+}
+
 
 /// 实现 Display trait 的 json字符串转义写入结构
 pub struct JsonDisplay<'a>(pub &'a str);
 
+impl Display for JsonDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let escape_start = find_escape(self.0.as_bytes());
+        // 没有转义字符, 则返回原值
+        if escape_start == u32::MAX {
+            f.write_str(self.0)
+        } else {
+            json_escape_write(f, self.0, escape_start)
+        }
+    }
+}
+
+
 // 自定义 JSON 字符串响应
 pub struct JsonString(pub String);
+
+impl IntoResponse for JsonString {
+    fn into_response(self) -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, APPLICATION_JSON)
+            .body(Body::from(self.0))
+            .unwrap()
+    }
+}
+
 
 /// api 接口通用返回样式
 #[derive(Serialize, Deserialize, Debug)]
@@ -139,11 +200,103 @@ pub struct ApiRes<T> {
     pub data: Option<T>,
 }
 
+impl<T: Serialize> ApiRes<T> {
+    /// 成功响应
+    pub fn ok(data: T) -> Self {
+        Self { code: 200, msg: None, data: Some(data) }
+    }
+
+    /// 成功无数据
+    pub fn ok_empty() -> Self {
+        ApiRes { code: 200, msg: None, data: None }
+    }
+
+    /// 错误响应
+    pub fn error<S: Into<String>>(code: u32, msg: S) -> Self {
+        Self { code, msg: Some(msg.into()), data: None }
+    }
+
+    /// 通用错误响应
+    pub fn error_universal<S: Into<String>>(msg: S) -> Self {
+        Self { code: 500, msg: Some(msg.into()), data: None }
+    }
+}
+
+// 实现 IntoResponse，让 ApiResult 可以直接返回
+impl<T: Serialize + Send + 'static> IntoResponse for ApiRes<T> {
+    fn into_response(self) -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, HeaderValue::from_static(APPLICATION_JSON))
+            .body(Body::from_stream(JsonStream::new(self)))
+            .unwrap()
+    }
+}
+
+
 /// api 接口通用错误样式
 #[derive(Debug)]
 pub struct ApiError {
     pub code: u32,
     pub msg: String,
+}
+
+impl ApiError {
+    pub fn error<T: Into<String>>(msg: T) -> Self {
+        Self { code: 500, msg: msg.into() }
+    }
+
+    pub fn error_with_code<T: Into<String>>(code: u16, msg: T) -> Self {
+        Self { code: code as u32, msg: msg.into() }
+    }
+
+    pub fn error_with_status<T: Into<String>>(status: StatusCode, msg: T) -> Self {
+        Self { code: status.as_u16() as u32, msg: msg.into() }
+    }
+
+    pub fn not_found() -> Self {
+        Self { code: 404, msg: "Not Found".into() }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response<Body> {
+        // ApiRes::<()> {
+        //     code: self.code,
+        //     msg: Some(self.msg),
+        //     data: None,
+        // }.into_response()
+        use std::io::Write;
+
+        let mut body = Vec::with_capacity(256);
+        let _ = write!(&mut body, r#"{{"code":{},"msg":"{}"}}"#, self.code, JsonDisplay(&self.msg));
+
+        let status = match StatusCode::from_u16(self.code as u16) {
+            Ok(status) => status,
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+
+        Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, APPLICATION_JSON)
+            .body(Body::from(body))
+            .unwrap()
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}", self.code, self.msg)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+// 关键：从 anyhow::Error 转换
+impl From<anyhow::Error> for ApiError {
+    fn from(e: anyhow::Error) -> Self {
+        Self { code: 500, msg: e.to_string() }
+    }
 }
 
 
@@ -209,155 +362,6 @@ pub fn compress_json(json: &str) -> String {
     unsafe { String::from_utf8_unchecked(buf) }
 }
 
-
-// ==================== 结构关联方法定义 ====================
-
-impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
-    type Rejection = std::convert::Infallible;
-
-    #[allow(clippy::manual_async_fn)]
-    fn from_request_parts(
-        parts: &mut Parts, _state: &S,
-    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        async move {
-            let real_ip = parts
-                .headers
-                .get("X-Forwarded-For")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.split(',').next())
-                .map(|s| s.trim().to_compact_string())
-                .or_else(|| {
-                    parts
-                        .headers
-                        .get("X-Real-IP")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_compact_string())
-                })
-                .unwrap_or_else(|| {
-                    parts
-                        .extensions
-                        .get::<ConnectInfo<SocketAddr>>()
-                        .map(|ci| ci.0.ip().to_compact_string())
-                        .unwrap_or_else(|| "unknown".to_compact_string())
-                });
-
-            Ok(ClientIp(real_ip))
-        }
-    }
-}
-
-impl IntoResponse for JsonString {
-    fn into_response(self) -> Response<Body> {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, APPLICATION_JSON)
-            .body(Body::from(self.0))
-            .unwrap()
-    }
-}
-
-impl Display for JsonDisplay<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let escape_start = find_escape(self.0.as_bytes());
-        // 没有转义字符, 则返回原值
-        if escape_start == u32::MAX {
-            f.write_str(self.0)
-        } else {
-            json_escape_write(f, self.0, escape_start)
-        }
-    }
-}
-
-impl<T: Serialize> ApiRes<T> {
-    /// 成功响应
-    pub fn ok(data: T) -> Self {
-        Self { code: 200, msg: None, data: Some(data) }
-    }
-
-    /// 成功无数据
-    pub fn ok_empty() -> Self {
-        ApiRes { code: 200, msg: None, data: None }
-    }
-
-    /// 错误响应
-    pub fn error<S: Into<String>>(code: u32, msg: S) -> Self {
-        Self { code, msg: Some(msg.into()), data: None }
-    }
-
-    /// 通用错误响应
-    pub fn error_universal<S: Into<String>>(msg: S) -> Self {
-        Self { code: 500, msg: Some(msg.into()), data: None }
-    }
-}
-
-// 实现 IntoResponse，让 ApiResult 可以直接返回
-impl<T: Serialize + Send + 'static> IntoResponse for ApiRes<T> {
-    fn into_response(self) -> Response<Body> {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, HeaderValue::from_static(APPLICATION_JSON))
-            .body(Body::from_stream(JsonStream::new(self)))
-            .unwrap()
-    }
-}
-
-impl ApiError {
-    pub fn error<T: Into<String>>(msg: T) -> Self {
-        Self { code: 500, msg: msg.into() }
-    }
-
-    pub fn error_with_code<T: Into<String>>(code: u16, msg: T) -> Self {
-        Self { code: code as u32, msg: msg.into() }
-    }
-
-    pub fn error_with_status<T: Into<String>>(status: StatusCode, msg: T) -> Self {
-        Self { code: status.as_u16() as u32, msg: msg.into() }
-    }
-
-    pub fn not_found() -> Self {
-        Self { code: 404, msg: "Not Found".into() }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response<Body> {
-        ApiRes::<()> {
-            code: self.code,
-            msg: Some(self.msg),
-            data: None,
-        }.into_response()
-        // use std::io::Write;
-
-        // let mut body = Vec::with_capacity(256);
-        // let _ = write!(&mut body, r#"{{"code":{},"msg":"{}"}}"#, self.code, JsonDisplay(&self.msg));
-
-        // let status = match StatusCode::from_u16(self.code as u16) {
-        //     Ok(status) => status,
-        //     Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        // };
-
-        // Response::builder()
-        //     .status(status)
-        //     .header(header::CONTENT_TYPE, APPLICATION_JSON)
-        //     .body(Body::from(body))
-        //     .unwrap()
-    }
-}
-
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.code, self.msg)
-    }
-}
-
-impl std::error::Error for ApiError {}
-
-// 关键：从 anyhow::Error 转换
-impl From<anyhow::Error> for ApiError {
-    fn from(e: anyhow::Error) -> Self {
-        Self { code: 500, msg: e.to_string() }
-    }
-}
 
 // ==================== 私有函数定义 ====================
 

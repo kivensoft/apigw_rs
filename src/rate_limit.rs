@@ -78,7 +78,7 @@ enum GenericRateLimiter {
     ),
 }
 
-struct RateLimitInfo {
+pub struct RateLimitInfo {
     /// 限速器配置
     config: RateLimitCfg,
     /// 限速器类型

@@ -84,7 +84,14 @@ pub struct CustomOnRequest;
 
 impl<B> OnRequest<B> for CustomOnRequest {
     fn on_request(&mut self, request: &Request<B>, _span: &Span) {
-        debug!(path = %request.uri().path(), "📥新的请求");
+        let uri = request.uri();
+        let path = uri.path();
+        match uri.query() {
+            Some(query) =>
+                debug!(%path, %query, "➡️新的请求"),
+            None =>
+                debug!(%path, "➡️新的请求"),
+        };
     }
 }
 
@@ -99,7 +106,7 @@ impl<B> OnResponse<B> for CustomOnResponse {
             Some(path) => &path.0,
             None => "",
         };
-        debug!(%path, %latency, %status, "📴请求处理完成");
+        debug!(%path, %latency, %status, "🔴请求完成");
     }
 }
 

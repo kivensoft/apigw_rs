@@ -11,7 +11,7 @@ use futures::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::ReqId;
+use crate::{ReqId, if_else};
 
 #[derive(Clone, Debug)]
 pub struct ReqPath(pub CompactString);
@@ -22,13 +22,20 @@ pub async fn capture_response_body(
 ) -> impl IntoResponse {
     let req_path = ReqPath(req.uri().path().into());
     let rid = req.extensions().get::<ReqId>().map_or(0, |v| v.0);
+
+    let (parts, body) = req.into_parts();
+    let use_log = tracing::enabled!(tracing::Level::DEBUG) && resp_is_text(&parts.headers);
+    let logged_body = LoggingBody::new(body, true, max_size as usize, use_log, rid);
+    let req = Request::from_parts(parts, Body::from_stream(logged_body));
+
     let mut response = next.run(req).await;
+
     response.extensions_mut().insert(req_path);
 
     let (parts, incoming) = response.into_parts();
     let use_log = tracing::enabled!(tracing::Level::DEBUG) && resp_is_text(&parts.headers);
     // 创建流式 body，直接传递帧数据
-    let logged_body = LoggingBody::new(incoming, max_size as usize, use_log, rid);
+    let logged_body = LoggingBody::new(incoming, false, max_size as usize, use_log, rid);
 
     Response::from_parts(parts, Body::from_stream(logged_body))
 }
@@ -39,6 +46,7 @@ pub struct LoggingBody {
     // inner: B,
     inner: Body,
     buffer: BytesMut,
+    req: bool,
     log_limit: usize,
     use_log: bool,
     rid: u32,
@@ -46,10 +54,11 @@ pub struct LoggingBody {
 
 // impl<B> LoggingBody<B> {
 impl LoggingBody {
-    pub fn new(body: Body, log_limit: usize, use_log: bool, rid: u32) -> Self {
+    pub fn new(body: Body, req: bool, log_limit: usize, use_log: bool, rid: u32) -> Self {
         Self {
             inner: body,
             buffer: BytesMut::with_capacity(log_limit),
+            req,
             log_limit,
             use_log,
             rid,
@@ -83,7 +92,8 @@ impl Stream for LoggingBody {
             Poll::Ready(None) => {
                 if self.use_log {
                     let preview = str_truncate(&self.buffer, self.log_limit);
-                    tracing::debug!("响应预览: {preview}");
+                    let show_type = if_else!(self.req, "请求", "响应");
+                    tracing::debug!("{show_type}预览: {preview}");
                 }
                 Poll::Ready(None)
             }
@@ -117,8 +127,9 @@ fn str_truncate(bytes: &[u8], max: usize) -> &str {
 }
 
 fn resp_is_text(headers: &HeaderMap<HeaderValue>) -> bool {
-    const TEXT_CONTENT_TYPES: [&str; 5] =
-        ["application/json", "text/html", "text/plain", "text/xml", "application/xml"];
+    const TEXT_CONTENT_TYPES: [&str; 6] =
+        ["application/json", "text/html", "text/plain", "text/xml", "application/xml",
+            "application/x-www-form-urlencoded"];
 
     if let Some(content_type_value) = headers.get(axum::http::header::CONTENT_TYPE)
         && let Ok(content_type) = content_type_value.to_str()
