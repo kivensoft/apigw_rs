@@ -250,6 +250,9 @@ pub async fn rate_limit_middleware(
     }
 }
 
+/// 从请求中获取ip
+/// # 参数
+/// * `req` - 请求对象
 fn get_ip(req: &Request) -> CompactString {
     req.headers()
         .get("X-Forwarded-For")
@@ -270,6 +273,9 @@ fn get_ip(req: &Request) -> CompactString {
         })
 }
 
+/// ip对象转为字符串
+/// # 参数
+/// * `ip` - ip对象
 fn ipv4_to_compact_string(ip: IpAddr) -> CompactString {
     let ipv4 = match ip {
         IpAddr::V4(ip) => ip,

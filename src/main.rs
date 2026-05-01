@@ -113,24 +113,32 @@ fn parse_cfg() -> bool {
 }
 
 /// 启动计划任务, 做一些定时清理的工作
-async fn run_scheduler() {
-    let scheduler = &SCHEDULER;
+async fn run_scheduler() -> Result<()> {
+    use tokio_cron_scheduler::{Job, JobScheduler};
 
-    // 过期反向代理的上游服务信息清理
-    scheduler
-        .add_repeat_task(3 * 60, || async {
-            let _ = task::spawn_blocking(proxy::services_clean).await;
-        })
-        .await;
+    let sched = JobScheduler::new().await?;
 
-    // 限速器过期资源清理
-    scheduler
-        .add_repeat_task(2 * 60, || async {
-            let _ = task::spawn_blocking(|| RATE_LIMITER_STATE.recycle()).await;
-        })
-        .await;
+    // Add basic cron job
+    // sched.add(
+    //     Job::new("1/10 * * * * *", |_uuid, _l| {
+    //         println!("I run every 10 seconds");
+    //     })?
+    // ).await?;
 
-    tokio::spawn(scheduler.run());
+    let job = Job::new_repeated(Duration::from_secs(180), |_uuid, _l| {
+        task::spawn_blocking(proxy::services_clean);
+    })?;
+    sched.add(job).await?;
+
+    let job = Job::new_repeated(Duration::from_secs(120), |_uuid, _l| {
+        task::spawn_blocking(|| RATE_LIMITER_STATE.recycle());
+    })?;
+    sched.add(job).await?;
+
+    sched.start().await?;
+    SCHEDULER.init(sched, "init scheduler");
+
+    Ok(())
 }
 
 async fn async_main() -> Result<()> {
@@ -150,7 +158,7 @@ async fn async_main() -> Result<()> {
     // }
 
     // 创建定时任务
-    run_scheduler().await;
+    run_scheduler().await?;
 
     // 创建路由器
     let router = build_router();

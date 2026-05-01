@@ -35,24 +35,23 @@ hot-restart = ["shellflip", "tokio-util"]
 
 [dependencies]
 mimalloc = { version = "0.1", optional = true } # 替代系统内存分配器
+
 # 最流行的异步io库
 tokio = { version = "1", features = [
     "fs", "macros", "net", "parking_lot", "rt", "rt-multi-thread",
     "signal", "sync", "time"
 ]}
 tokio-utils = "0.1" # tokio扩展工具类
-# futures = "0.3" # 异步编程的官方库
-# futures-util = "0.3" # 异步扩展库
-async-trait = "0.1" # trait的异步函数声明库
+tokio-cron-scheduler = "0.15" # 基于tokio实现的类似cron的定时任务调度器
 hyper = { version = "1", features = ["http1", "client"] } # 最流行的底层http协议库
 hyper-util = { version = "0.1", features = [ "client", "client-legacy", "http1", "tokio" ] } #hyper 扩展库
-# http-body = "1" # http body 库
-http-body-util = "0.1" # http body 扩展库
 
 axum = "0.8" # tokio 官方出品的web框架
 tower = "0.5" # 配合 axum 使用的中间件库
 tower-http = { version = "0.6", features = ["cors", "trace"] } # http 中间件库
 time = { version = "0.3", features = ["macros"] } # 日期时间库
+# http-body = "1" # http body 库
+http-body-util = "0.1" # http body 扩展库
 
 tracing = "0.1" # 结构化日志库
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "local-time"] }
@@ -71,6 +70,7 @@ serde_repr = "0.1" # 将 enum 进行数值化的序列化和反序列化
 # cookie = { version = "0.18", features = ["percent-encode"] } # http cookie库
 anyhow = "1" # 最流行的错误处理库
 arc-swap = "1" # 读多写少的的并发数据共享库
+async-trait = "0.1" # trait的异步函数声明库
 base64 = "0.22" # base64 编解码库
 bytes = "1" # 高效字节处理库
 # bumpalo = {version = "3", features = ["collections", "serde", "boxed"]} # 快速 arena 内存分配库
@@ -81,6 +81,8 @@ compact_str = { version = "0.9", features = ["serde", "bytes"] } # 小字符串�
 dashmap = "6" # 高性能线程安全map
 fast_radix_trie = "1" # 一个快速字典树
 fnv = "1" # 速度更快的HashMap, 适用于小数据量
+# futures = "0.3" # 异步编程的官方库
+# futures-util = "0.3" # 异步扩展库
 governor = "0.10" # 经典令牌桶算法库
 # indexmap = {version = "2", features = ["serde"]} # 类似java的LinkedHashMap
 cfg-if = "1" # 条件编译宏
@@ -88,7 +90,7 @@ itoa = "1" # 快速整数转字符串库
 memchr = "2" # 快速查找字符串中某个字符的索引
 mini-moka = "0.10" # 轻量级缓存库，rust版本的Caffeine实现
 parking_lot = "0.12" # 性能更好的替代标准库Mutex/RwLock的三方库
-prost = "0.14" # protobuf 序列化反序列化库
+# prost = "0.14" # protobuf 序列化反序列化库
 rand = "0.10" # 最广泛使用的随机数生成库
 # redb = "4" # 嵌入式kv数据库
 rclite = "0.4" # 比Arc更轻量的替代库

@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use kv_axum_util::SimpleScheduler;
+use tokio_cron_scheduler::JobScheduler;
 
 use crate::{rate_limit::RateLimiterState, static_val::StaticVal};
 
@@ -15,7 +15,7 @@ pub struct AppVar {
 
 pub static APP_VAR: StaticVal<AppVar> = StaticVal::new();
 
-pub static SCHEDULER: LazyLock<SimpleScheduler> = LazyLock::new(|| SimpleScheduler::new(60));
+pub static SCHEDULER: StaticVal<JobScheduler> = StaticVal::new();
 pub static RATE_LIMITER_STATE: LazyLock<RateLimiterState> = LazyLock::new(RateLimiterState::new);
 // pub static REDIS_CLIENT: StaticVal<RedisClient> = StaticVal::new();
 
